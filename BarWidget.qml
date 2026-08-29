@@ -91,6 +91,6 @@ BarWidget {
       else if (button === Qt.RightButton) root.media("play-pause")
       else if (button === Qt.MiddleButton) root.media("next")
     }
-    onWheel: wheel => root.media(wheel.angleDelta.y > 0 ? "previous" : "next")
+    onWheelMoved: function(delta) { root.media(delta > 0 ? "previous" : "next") }
   }
 }
