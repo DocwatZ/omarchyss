@@ -18,27 +18,36 @@ the bar.
   Quickshell's native MPRIS service, so it updates instantly and works with
   any MPRIS player (not just Spotify).
 - Optional Spotify catalog **search** from the same popup: search by song or
-  artist and start playback on a device, using the Spotify Web API. This is
-  a separate, opt-in feature from the MPRIS controls above (see
-  [Spotify search setup](#spotify-search-setup)).
+  artist and play it on the selected Spotify Connect device. When no device
+  is active, OmarchySS starts its own headless player. This is a separate,
+  opt-in feature from MPRIS controls (see [Spotify search
+  setup](#spotify-search-setup)).
+- A Spotify Connect device selector for moving playback between OmarchySS,
+  phones, TVs, speakers, and other available devices.
 - Optionally pause Spotify for the screensaver session and resume it on exit.
 - Optional auto-close timer.
 - Adjustable terminal font size (default: 28pt).
-- Beat-reactive animation cycling, using Cava's live PipeWire audio frames.
+- Beat-reactive animation cycling: Cava analyzes local PipeWire audio and
+  each detected bass beat advances to another TTFX effect.
 - A registered Omarchy global action for binding a keyboard shortcut.
 
 ## Requirements
 
 `ttfx`, `jq`, `hyprctl`, and either Alacritty or Foot are required. Spotify
-metadata and popup controls require `playerctl` (used only for the
-screensaver's own pause-on-start/resume-on-stop) and a running MPRIS-capable
-player (e.g. the Spotify desktop app); beat-reactive effects require `cava`.
-Spotify search additionally requires `python3` and `secret-tool` (part of
-`libsecret`), both of which ship by default on Omarchy.
+metadata and the screensaver's pause-on-start/resume-on-stop behavior require
+`playerctl`; beat-reactive effects require `cava`.
+Spotify search and built-in playback additionally require `python3`,
+`secret-tool` (part of `libsecret`), and `spotifyd`. Python and libsecret
+ship by default on Omarchy.
 
 ```bash
-omarchy pkg add playerctl cava
+omarchy pkg add playerctl cava spotifyd
 ```
+
+Beat detection works when audio is playing through this computer. Spotify
+Connect playback transferred to a TV, phone, or speaker has no local
+PipeWire audio stream for Cava to analyze. Beat-reactive mode keeps playback
+running even when **Pause Spotify while active** is enabled.
 
 ## Install
 
@@ -53,6 +62,12 @@ also available as:
 ~/.config/omarchy/plugins/io.github.docwatz.omarchyss/bin/omarchyss start
 ```
 
+The bar popup also provides quick **Beat-reactive effects**, **Beat
+sensitivity**, and **Custom text** controls. High sensitivity follows smaller
+audio transients; Medium and Low reduce effect changes. Custom text replaces
+the artist/track display; clearing the field restores artist and track
+metadata. Changes restart and update an active screensaver automatically.
+
 ## Shortcut
 
 The plugin registers `io.github.docwatz.omarchyss:toggle`. Add a persistent
@@ -66,30 +81,25 @@ hl.bind("SUPER + SHIFT + S", hl.dsp.global("io.github.docwatz.omarchyss:toggle")
 ## Spotify search setup
 
 Player controls (play/pause/seek/volume/shuffle/repeat) work out of the box
-via MPRIS — no setup needed. Searching Spotify's catalog and starting
-playback of a chosen track needs the Spotify **Web API**, which requires a
-free developer app and a one-time login:
+via MPRIS — no setup needed. To enable Spotify catalog search and start
+playback of a chosen track, complete a one-time login using either method:
 
-1. Create an app at the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
-   Any name/description is fine.
-2. In the app's settings, add this exact **Redirect URI**:
-   `http://127.0.0.1:8945/callback`
-3. Copy the app's **Client ID**, then run:
-   ```bash
-   PLUGIN_DIR=~/.config/omarchy/plugins/io.github.docwatz.omarchyss
-   python3 "$PLUGIN_DIR/bin/omarchyss-spotify" setup <your-client-id>
-   ```
-4. Either run `python3 "$PLUGIN_DIR/bin/omarchyss-spotify" auth` once from a
-   terminal, or click **Connect Spotify** in the bar widget's popup — a
-   browser window opens for you to approve access, and the resulting refresh
-   token is stored in your system keyring (`secret-tool`/gnome-keyring), not
-   in a plaintext file.
-5. Search and playback (`/v1/me/player/play`) require an active **Spotify
-   Premium** account and a running/open Spotify Connect device (e.g. the
-   desktop app).
+- **GUI:** Right-click the bar icon and click **Connect Spotify**.
+- **Terminal:**
+  ```bash
+  PLUGIN_DIR=~/.config/omarchy/plugins/io.github.docwatz.omarchyss
+  python3 "$PLUGIN_DIR/bin/omarchyss-spotify" setup
+  ```
 
-Nothing is sent anywhere except Spotify's own API — the Client ID/token
-never leave your machine.
+A browser opens for Spotify approval. The Web API refresh token is stored in
+the system keyring (`secret-tool`/gnome-keyring). The playback authorization
+is stored in a user-only file under `~/.local/state/omarchyss/`.
+
+OmarchySS then starts its own headless Spotify Connect device through
+`spotifyd` (which uses librespot internally), so the Spotify desktop app does
+not need to be open. Playback requires Spotify Premium.
+
+Nothing is sent anywhere except Spotify's own API.
 
 ## License
 

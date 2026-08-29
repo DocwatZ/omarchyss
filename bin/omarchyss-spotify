@@ -8,21 +8,29 @@ screensaver/MPRIS script) since this talks to the network and needs
 JSON/HTTP handling that's painful in bash.
 
 Usage:
-  omarchyss-spotify setup <client-id>   Store your Spotify app's Client ID
-  omarchyss-spotify auth                One-time browser login (PKCE)
+  omarchyss-spotify setup               One-time browser login (PKCE)
+  omarchyss-spotify auth                Log in again
   omarchyss-spotify status              Print auth/config status as JSON
   omarchyss-spotify search <query>      Search tracks, print JSON array
   omarchyss-spotify play <uri>          Start playback of a track URI
   omarchyss-spotify devices             List available Spotify Connect devices
+  omarchyss-spotify transfer <id>       Transfer playback to a device
+  omarchyss-spotify now-playing         Print active playback state as JSON
+  omarchyss-spotify control <action>    Control the active playback device
+  omarchyss-spotify preferences         Read popup screensaver preferences
+  omarchyss-spotify preferences set ... Persist popup screensaver preferences
 """
 import base64
+import fcntl
 import hashlib
 import http.server
 import json
 import os
 import secrets
+import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -38,6 +46,15 @@ KEYRING_SERVICE = "omarchyss"
 KEYRING_KEY = "spotify-refresh-token"
 API_BASE = "https://api.spotify.com/v1"
 ACCOUNTS_BASE = "https://accounts.spotify.com"
+CLIENT_ID = "0388ab0cbad445a4a67499815dc37891"
+DEVICE_NAME = "OmarchySS"
+STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "omarchyss")
+SPOTIFYD_CACHE_DIR = os.path.join(STATE_DIR, "spotifyd-cache")
+SPOTIFYD_CREDENTIAL_FILE = os.path.join(SPOTIFYD_CACHE_DIR, "oauth", "credentials.json")
+SPOTIFYD_PID_FILE = os.path.join(STATE_DIR, "spotifyd.pid")
+SPOTIFYD_LOCK_FILE = os.path.join(STATE_DIR, "spotifyd.lock")
+SPOTIFYD_LOG_FILE = os.path.join(STATE_DIR, "spotifyd.log")
+SPOTIFYD_OAUTH_PORT = 8946
 
 
 def die(message, code=1):
@@ -52,11 +69,38 @@ def load_config():
         return json.load(f)
 
 
-def save_config(config):
+def save_config(config, preferences_authoritative=False):
     os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=2)
-    os.chmod(CONFIG_FILE, 0o600)
+    lock_path = f"{CONFIG_FILE}.lock"
+    with open(lock_path, "w") as lock:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not preferences_authoritative and os.path.isfile(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE) as current_file:
+                    current = json.load(current_file)
+                if "preferences" in current:
+                    config["preferences"] = current["preferences"]
+            except (OSError, json.JSONDecodeError):
+                pass
+        fd, temporary_path = tempfile.mkstemp(prefix="spotify.", dir=CONFIG_DIR)
+        try:
+            with os.fdopen(fd, "w") as temporary_file:
+                json.dump(config, temporary_file, indent=2)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.chmod(temporary_path, 0o600)
+            os.replace(temporary_path, CONFIG_FILE)
+        finally:
+            try:
+                os.unlink(temporary_path)
+            except FileNotFoundError:
+                pass
+
+
+def ensure_private_dir(path):
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    os.chmod(path, 0o700)
 
 
 def keyring_store(refresh_token):
@@ -104,10 +148,7 @@ def http_json(url, data=None, headers=None, method=None):
 
 
 def require_client_id(config):
-    client_id = config.get("client_id")
-    if not client_id:
-        die("omarchyss-spotify: no Client ID configured. Run: omarchyss-spotify setup <client-id>")
-    return client_id
+    return config.get("client_id", CLIENT_ID)
 
 
 def pkce_pair():
@@ -117,13 +158,9 @@ def pkce_pair():
 
 
 def cmd_setup(args):
-    if not args:
-        die("Usage: omarchyss-spotify setup <client-id>")
-    config = load_config()
-    config["client_id"] = args[0]
-    save_config(config)
-    print(f"Stored Spotify Client ID. Now run: omarchyss-spotify auth")
-    print(f"Make sure {REDIRECT_URI} is registered as a Redirect URI on your Spotify app.")
+    if args:
+        die("Usage: omarchyss-spotify setup")
+    cmd_auth([])
 
 
 def cmd_auth(_args):
@@ -204,8 +241,16 @@ def cmd_auth(_args):
     keyring_store(payload["refresh_token"])
     config["access_token"] = payload["access_token"]
     config["access_token_expires_at"] = time.time() + payload.get("expires_in", 3600) - 30
+    config["granted_scopes"] = payload.get("scope", SCOPES).split()
     save_config(config)
-    print("Spotify login complete. You're all set.")
+    stop_spotifyd()
+    try:
+        os.unlink(SPOTIFYD_CREDENTIAL_FILE)
+    except FileNotFoundError:
+        pass
+    authenticate_spotifyd()
+    start_spotifyd()
+    print("Spotify login complete. OmarchySS is ready as a playback device.")
 
 
 def get_access_token(config):
@@ -257,11 +302,161 @@ def api_request(config, path, method="GET", body=None):
         return e.code, payload
 
 
+def managed_spotifyd_pid():
+    try:
+        with open(SPOTIFYD_PID_FILE) as f:
+            pid = int(f.read().strip())
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            command = f.read().replace(b"\0", b" ").decode(errors="replace")
+        if "spotifyd" in command and SPOTIFYD_CACHE_DIR in command:
+            return pid
+    except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError):
+        pass
+    try:
+        os.unlink(SPOTIFYD_PID_FILE)
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def spotifyd_log_tail():
+    try:
+        with open(SPOTIFYD_LOG_FILE, errors="replace") as f:
+            lines = f.readlines()
+        return "".join(lines[-8:]).strip()
+    except OSError:
+        return ""
+
+
+def spotifyd_authenticated():
+    return os.path.isfile(SPOTIFYD_CREDENTIAL_FILE)
+
+
+def authenticate_spotifyd():
+    if spotifyd_authenticated():
+        return
+    if not os.path.isfile("/usr/bin/spotifyd"):
+        die("spotifyd is required. Install it with: omarchy pkg add spotifyd")
+    ensure_private_dir(STATE_DIR)
+    ensure_private_dir(SPOTIFYD_CACHE_DIR)
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/spotifyd",
+                "authenticate",
+                "--cache-path", SPOTIFYD_CACHE_DIR,
+                "--oauth-port", str(SPOTIFYD_OAUTH_PORT),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        die("Timed out waiting for Spotify playback authorization.")
+    if result.returncode != 0 or not spotifyd_authenticated():
+        detail = (result.stderr or result.stdout).strip()
+        die(f"Spotify playback authorization failed{': ' + detail if detail else '.'}")
+    os.chmod(SPOTIFYD_CREDENTIAL_FILE, 0o600)
+
+
+def start_spotifyd():
+    if not spotifyd_authenticated():
+        die("Authorize the OmarchySS playback device first.")
+    if not os.path.isfile("/usr/bin/spotifyd"):
+        die("spotifyd is required. Install it with: omarchy pkg add spotifyd")
+
+    ensure_private_dir(STATE_DIR)
+    ensure_private_dir(SPOTIFYD_CACHE_DIR)
+    with open(SPOTIFYD_LOCK_FILE, "w") as lock:
+        os.chmod(SPOTIFYD_LOCK_FILE, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if managed_spotifyd_pid():
+            return
+        log = open(SPOTIFYD_LOG_FILE, "wb", buffering=0)
+        try:
+            process = subprocess.Popen(
+                [
+                    "/usr/bin/spotifyd",
+                    "--config-path", "/dev/null",
+                    "--no-daemon",
+                    "--device-name", DEVICE_NAME,
+                    "--device-type", "computer",
+                    "--bitrate", "320",
+                    "--backend", "pulseaudio",
+                    "--cache-path", SPOTIFYD_CACHE_DIR,
+                    "--max-cache-size", "536870912",
+                    "--volume-normalisation",
+                    "--disable-discovery",
+                    "--use-mpris",
+                    "--dbus-type", "session",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+            )
+        finally:
+            log.close()
+        with open(SPOTIFYD_PID_FILE, "w") as f:
+            f.write(f"{process.pid}\n")
+        os.chmod(SPOTIFYD_PID_FILE, 0o600)
+        time.sleep(1)
+        if process.poll() is not None:
+            try:
+                os.unlink(SPOTIFYD_PID_FILE)
+            except FileNotFoundError:
+                pass
+            detail = spotifyd_log_tail()
+            die(f"OmarchySS playback device failed to start{': ' + detail if detail else '.'}")
+
+
+def stop_spotifyd():
+    pid = managed_spotifyd_pid()
+    if not pid:
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    for _ in range(30):
+        if not os.path.exists(f"/proc/{pid}"):
+            break
+        time.sleep(0.1)
+    if os.path.exists(f"/proc/{pid}"):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        os.unlink(SPOTIFYD_PID_FILE)
+    except FileNotFoundError:
+        pass
+
+
+def find_omarchyss_device(config, wait_seconds=0):
+    deadline = time.time() + wait_seconds
+    while True:
+        status, payload = api_request(config, "/me/player/devices")
+        if status == 200:
+            device = next(
+                (item for item in payload.get("devices", []) if item.get("name") == DEVICE_NAME),
+                None,
+            )
+            if device:
+                return device
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.5)
+
+
 def cmd_status(_args):
     config = load_config()
     print(json.dumps({
-        "configured": bool(config.get("client_id")),
+        "configured": True,
         "loggedIn": bool(keyring_lookup()),
+        "playbackReady": spotifyd_authenticated(),
+        "deviceRunning": bool(managed_spotifyd_pid()),
+        "preferences": config.get("preferences", {}),
     }))
 
 
@@ -299,27 +494,190 @@ def cmd_devices(_args):
     print(json.dumps(payload.get("devices", [])))
 
 
+def cmd_transfer(args):
+    if len(args) != 1:
+        die("Usage: omarchyss-spotify transfer <device-id>", 2)
+    config = load_config()
+    status, payload = api_request(config, "/me/player/devices")
+    if status != 200:
+        die(f"omarchyss-spotify: devices failed ({status}): {payload.get('error', payload)}")
+    device = next((item for item in payload.get("devices", []) if item.get("id") == args[0]), None)
+    if not device:
+        die("That Spotify device is no longer available. Refresh the device list and try again.")
+    playback = current_playback(config)
+    status, payload = api_request(
+        config,
+        "/me/player",
+        method="PUT",
+        body={"device_ids": [device["id"]], "play": playback.get("isPlaying") is True},
+    )
+    if status not in (200, 204):
+        die(f"Could not switch to {device.get('name', 'that device')} ({status}): "
+            f"{payload.get('error', payload)}")
+    print(json.dumps({"id": device["id"], "name": device.get("name", "")}))
+
+
+def current_playback(config):
+    status, payload = api_request(config, "/me/player")
+    if status == 204:
+        return {}
+    if status != 200:
+        die(f"omarchyss-spotify: playback state failed ({status}): {payload.get('error', payload)}")
+    item = payload.get("item") or {}
+    album = item.get("album") or {}
+    images = album.get("images") or []
+    device = payload.get("device") or {}
+    return {
+        "active": bool(device.get("id")),
+        "isPlaying": payload.get("is_playing") is True,
+        "title": item.get("name", ""),
+        "artists": ", ".join(artist.get("name", "") for artist in item.get("artists", [])),
+        "album": album.get("name", ""),
+        "image": images[0].get("url", "") if images else "",
+        "progressMs": payload.get("progress_ms") or 0,
+        "durationMs": item.get("duration_ms") or 0,
+        "volumePercent": device.get("volume_percent"),
+        "shuffle": payload.get("shuffle_state") is True,
+        "repeatState": payload.get("repeat_state", "off"),
+        "device": {
+            "id": device.get("id", ""),
+            "name": device.get("name", ""),
+            "type": device.get("type", ""),
+        },
+    }
+
+
+def cmd_now_playing(_args):
+    print(json.dumps(current_playback(load_config())))
+
+
+def cmd_control(args):
+    if not args:
+        die("Usage: omarchyss-spotify control {play-pause|play|pause|next|previous|seek|volume|shuffle|repeat}", 2)
+    action = args[0]
+    config = load_config()
+    method = "PUT"
+    path = ""
+
+    if action == "play-pause":
+        playback = current_playback(config)
+        if not playback.get("active"):
+            die("No active Spotify playback device.")
+        path = "/me/player/pause" if playback.get("isPlaying") else "/me/player/play"
+    elif action in ("play", "pause"):
+        path = f"/me/player/{action}"
+    elif action in ("next", "previous"):
+        method = "POST"
+        path = f"/me/player/{action}"
+    elif action == "seek" and len(args) == 2:
+        try:
+            position_ms = max(0, int(args[1]))
+        except ValueError:
+            die("Seek position must be milliseconds.", 2)
+        path = f"/me/player/seek?{urllib.parse.urlencode({'position_ms': position_ms})}"
+    elif action == "volume" and len(args) == 2:
+        try:
+            volume = min(100, max(0, int(args[1])))
+        except ValueError:
+            die("Volume must be between 0 and 100.", 2)
+        path = f"/me/player/volume?{urllib.parse.urlencode({'volume_percent': volume})}"
+    elif action == "shuffle" and len(args) == 2 and args[1] in ("true", "false"):
+        path = f"/me/player/shuffle?{urllib.parse.urlencode({'state': args[1]})}"
+    elif action == "repeat" and len(args) == 2 and args[1] in ("off", "track", "context"):
+        path = f"/me/player/repeat?{urllib.parse.urlencode({'state': args[1]})}"
+    else:
+        die("Invalid Spotify control action or value.", 2)
+
+    status, payload = api_request(config, path, method=method)
+    if status not in (200, 202, 204):
+        die(f"Spotify control failed ({status}): {payload.get('error', payload)}")
+    print(json.dumps({"ok": True, "action": action}))
+
+
+def cmd_preferences(args):
+    config = load_config()
+    preferences = config.setdefault("preferences", {})
+    if not args:
+        print(json.dumps(preferences))
+        return
+    if args[0] != "set" or len(args) < 3 or len(args[1:]) % 2 != 0:
+        die("Usage: omarchyss-spotify preferences set <key> <value> [...]", 2)
+
+    allowed = {"beatReactive", "beatSensitivity", "customText", "textMode"}
+    for index in range(1, len(args), 2):
+        key, value = args[index], args[index + 1]
+        if key not in allowed:
+            die(f"Unknown preference: {key}", 2)
+        if key == "beatReactive":
+            if value not in ("true", "false"):
+                die("beatReactive must be true or false.", 2)
+            preferences[key] = value == "true"
+        elif key == "textMode":
+            if value not in ("track", "custom"):
+                die("textMode must be track or custom.", 2)
+            preferences[key] = value
+        elif key == "beatSensitivity":
+            if value not in ("low", "medium", "high"):
+                die("beatSensitivity must be low, medium, or high.", 2)
+            preferences[key] = value
+        else:
+            preferences[key] = value
+    save_config(config, preferences_authoritative=True)
+    print(json.dumps(preferences))
+
+
 def cmd_play(args):
     if not args:
         die("Usage: omarchyss-spotify play <uri> [device_id]")
     uri = args[0]
+    if not uri.startswith("spotify:track:"):
+        die("omarchyss-spotify: play requires a Spotify track URI.")
     config = load_config()
-    device_id = args[1] if len(args) > 1 else None
-    if not device_id:
-        status, payload = api_request(config, "/me/player/devices")
-        devices = payload.get("devices", []) if status == 200 else []
-        active = next((d for d in devices if d.get("is_active")), None)
-        device_id = (active or (devices[0] if devices else {})).get("id")
-    path = "/me/player/play"
-    if device_id:
-        path += f"?{urllib.parse.urlencode({'device_id': device_id})}"
+    status, payload = api_request(config, "/me/player/devices")
+    devices = payload.get("devices", []) if status == 200 else []
+    requested_device_id = args[1] if len(args) > 1 else ""
+    device = next(
+        (item for item in devices if item.get("id") == requested_device_id),
+        None,
+    )
+    if not device:
+        device = next((item for item in devices if item.get("is_active")), None)
+    if not device:
+        start_spotifyd()
+        device = find_omarchyss_device(config, wait_seconds=15)
+    if not device:
+        die("No Spotify playback device is available.")
+    path = f"/me/player/play?{urllib.parse.urlencode({'device_id': device['id']})}"
     status, payload = api_request(config, path, method="PUT", body={"uris": [uri]})
     if status not in (200, 204):
         die(f"omarchyss-spotify: play failed ({status}): {payload.get('error', payload)}\n"
-            "(Remote play requires Spotify Premium and an active/open Spotify device.)")
+            "(Playback requires Spotify Premium.)")
+
+
+def cmd_device(args):
+    action = args[0] if args else "status"
+    if action == "setup":
+        authenticate_spotifyd()
+        start_spotifyd()
+        print(json.dumps({"running": True, "ready": True, "name": DEVICE_NAME}))
+    elif action == "start":
+        start_spotifyd()
+        print(json.dumps({"running": True, "name": DEVICE_NAME}))
+    elif action == "stop":
+        stop_spotifyd()
+        print(json.dumps({"running": False, "name": DEVICE_NAME}))
+    elif action == "status":
+        print(json.dumps({"running": bool(managed_spotifyd_pid()), "name": DEVICE_NAME}))
+    else:
+        die("Usage: omarchyss-spotify device {setup|start|stop|status}", 2)
 
 
 def cmd_logout(_args):
+    stop_spotifyd()
+    try:
+        os.unlink(SPOTIFYD_CREDENTIAL_FILE)
+    except FileNotFoundError:
+        pass
     keyring_clear()
     config = load_config()
     config.pop("access_token", None)
@@ -335,6 +693,11 @@ COMMANDS = {
     "search": cmd_search,
     "devices": cmd_devices,
     "play": cmd_play,
+    "transfer": cmd_transfer,
+    "now-playing": cmd_now_playing,
+    "control": cmd_control,
+    "preferences": cmd_preferences,
+    "device": cmd_device,
     "logout": cmd_logout,
 }
 

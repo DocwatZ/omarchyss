@@ -22,9 +22,26 @@ BarWidget {
   // popup opens. MPRIS controls below work regardless of this.
   property bool spotifyConfigured: false
   property bool spotifyLoggedIn: false
+  property bool spotifyPlaybackReady: false
+  property bool spotifyDeviceRunning: false
+  property var spotifyDevices: []
+  property string selectedSpotifyDeviceId: ""
+  property bool loadingSpotifyDevices: false
+  property bool switchingSpotifyDevice: false
+  property string deviceError: ""
+  property var remotePlayer: ({})
   property var searchResults: []
   property bool searching: false
+  property bool connectingSpotify: false
+  property bool startingPlayback: false
   property string searchError: ""
+  property bool beatReactiveEnabled: String(setting("beatReactive", false)) === "true"
+  property string beatSensitivity: String(setting("beatSensitivity", "high"))
+  property string screensaverTextMode: String(setting("textMode", "track"))
+  property string screensaverCustomText: String(setting("customText", ""))
+  property bool savingScreensaverPreferences: false
+  property bool screensaverPreferenceSavePending: false
+  property string screensaverSettingsError: ""
 
   function close() { root.popupOpen = false }
 
@@ -34,14 +51,49 @@ BarWidget {
   // own screensaver window is running.
   readonly property var mprisPlayers: Mpris.players ? Mpris.players.values : []
   readonly property var spotifyPlayer: findSpotifyPlayer()
+  readonly property bool remotePlayerActive: remotePlayer.active === true
+  readonly property bool hasPlayer: remotePlayerActive || spotifyPlayer !== null
+  readonly property bool playerIsPlaying: remotePlayerActive
+    ? remotePlayer.isPlaying === true : (spotifyPlayer ? spotifyPlayer.isPlaying : false)
+  readonly property string playerTrackTitle: remotePlayerActive
+    ? String(remotePlayer.title || "") : (spotifyPlayer ? String(spotifyPlayer.trackTitle || "") : "")
+  readonly property string playerTrackArtist: remotePlayerActive
+    ? String(remotePlayer.artists || "") : (spotifyPlayer ? String(spotifyPlayer.trackArtist || "") : "")
+  readonly property string playerArtUrl: remotePlayerActive
+    ? String(remotePlayer.image || "") : (spotifyPlayer ? String(spotifyPlayer.trackArtUrl || "") : "")
+  readonly property real playerPosition: remotePlayerActive
+    ? Number(remotePlayer.progressMs || 0) / 1000 : (spotifyPlayer ? spotifyPlayer.position : 0)
+  readonly property real playerLength: remotePlayerActive
+    ? Number(remotePlayer.durationMs || 0) / 1000 : (spotifyPlayer ? spotifyPlayer.length : 0)
+  readonly property real playerVolume: remotePlayerActive
+    ? Number(remotePlayer.volumePercent || 0) / 100 : (spotifyPlayer ? spotifyPlayer.volume : 0)
+  readonly property bool playerVolumeSupported: remotePlayerActive
+    ? remotePlayer.volumePercent !== null && remotePlayer.volumePercent !== undefined
+    : (spotifyPlayer ? spotifyPlayer.volumeSupported : false)
+  readonly property bool playerShuffle: remotePlayerActive
+    ? remotePlayer.shuffle === true : (spotifyPlayer ? spotifyPlayer.shuffle : false)
+  readonly property string playerRepeatState: remotePlayerActive
+    ? String(remotePlayer.repeatState || "off")
+    : (spotifyPlayer && spotifyPlayer.loopState === 2 ? "track"
+       : (spotifyPlayer && spotifyPlayer.loopState === 1 ? "context" : "off"))
 
   function findSpotifyPlayer() {
+    var playingPlayer = null
+    var spotifydPlayer = null
+    var desktopPlayer = null
     for (var i = 0; i < mprisPlayers.length; i++) {
       var p = mprisPlayers[i]
       var id = ((p.identity || "") + " " + (p.desktopEntry || "")).toLowerCase()
-      if (id.indexOf("spotify") !== -1) return p
+      if (id.indexOf("spotifyd") !== -1) {
+        if (p.isPlaying) playingPlayer = p
+        spotifydPlayer = p
+      } else if (id.indexOf("spotify") !== -1) {
+        if (p.isPlaying && !playingPlayer) playingPlayer = p
+        else if (!desktopPlayer) desktopPlayer = p
+      }
     }
-    return mprisPlayers.length > 0 ? mprisPlayers[0] : null
+    return playingPlayer || spotifydPlayer || desktopPlayer
+      || (mprisPlayers.length > 0 ? mprisPlayers[0] : null)
   }
 
   function fmtTime(seconds) {
@@ -50,18 +102,24 @@ BarWidget {
     return m + ":" + (s < 10 ? "0" : "") + s
   }
 
+  function screensaverCommand(action) {
+    return ["bash", helperPath, action,
+            "--effect", String(setting("effect", "random")),
+            "--text-mode", screensaverTextMode,
+            "--custom-text", screensaverCustomText,
+            "--pause-spotify", setting("pauseSpotify", true) ? "true" : "false",
+            "--timeout", String(setting("autoCloseSeconds", 0)),
+            "--beat-reactive", beatReactiveEnabled ? "true" : "false",
+            "--beat-sensitivity", beatSensitivity,
+            "--font-size", String(setting("fontSize", 28)),
+            "--use-figlet", setting("useFiglet", false) ? "true" : "false",
+            "--figlet-font", String(setting("figletFontPath", ""))]
+  }
+
   function startOrStop() {
-    var args = ["bash", helperPath, running ? "stop" : "start",
-                "--effect", String(setting("effect", "random")),
-                "--text-mode", String(setting("textMode", "track")),
-                "--custom-text", String(setting("customText", "")),
-                "--pause-spotify", setting("pauseSpotify", true) ? "true" : "false",
-                "--timeout", String(setting("autoCloseSeconds", 0)),
-                "--beat-reactive", setting("beatReactive", false) ? "true" : "false",
-                "--font-size", String(setting("fontSize", 28)),
-                "--use-figlet", setting("useFiglet", false) ? "true" : "false",
-                "--figlet-font", String(setting("figletFontPath", ""))]
-    Quickshell.execDetached(args)
+    Quickshell.execDetached(running
+      ? ["bash", helperPath, "stop"]
+      : screensaverCommand("start"))
     Qt.callLater(refresh)
   }
 
@@ -75,25 +133,123 @@ BarWidget {
   // and is only used for the quick bar-icon gestures), these read/write the
   // Quickshell.Services.Mpris player object directly, so seek/volume/shuffle
   // work without adding new bash subcommands.
-  function playPause() { if (spotifyPlayer && spotifyPlayer.canTogglePlaying) spotifyPlayer.togglePlaying() }
-  function nextTrack() { if (spotifyPlayer && spotifyPlayer.canGoNext) spotifyPlayer.next() }
-  function previousTrack() { if (spotifyPlayer && spotifyPlayer.canGoPrevious) spotifyPlayer.previous() }
-  function seekToFraction(fraction) {
-    if (!spotifyPlayer || !spotifyPlayer.canSeek || !spotifyPlayer.lengthSupported) return
-    var target = fraction * spotifyPlayer.length
-    spotifyPlayer.seek(target - spotifyPlayer.position)
+  function runSpotifyControl(args) {
+    if (spotifyLoggedIn && remotePlayerActive) {
+      controlProcess.command = ["python3", root.spotifyHelperPath, "control"].concat(args)
+      controlProcess.running = false
+      controlProcess.running = true
+      return true
+    }
+    return false
   }
-  function setVolume(v) { if (spotifyPlayer && spotifyPlayer.volumeSupported) spotifyPlayer.volume = v }
-  function toggleShuffle() { if (spotifyPlayer && spotifyPlayer.shuffleSupported) spotifyPlayer.shuffle = !spotifyPlayer.shuffle }
+
+  function playPause() {
+    if (!runSpotifyControl(["play-pause"]) && spotifyPlayer && spotifyPlayer.canTogglePlaying)
+      spotifyPlayer.togglePlaying()
+  }
+  function nextTrack() {
+    if (!runSpotifyControl(["next"]) && spotifyPlayer && spotifyPlayer.canGoNext)
+      spotifyPlayer.next()
+  }
+  function previousTrack() {
+    if (!runSpotifyControl(["previous"]) && spotifyPlayer && spotifyPlayer.canGoPrevious)
+      spotifyPlayer.previous()
+  }
+  function seekToFraction(fraction) {
+    if (remotePlayerActive) {
+      runSpotifyControl(["seek", String(Math.round(fraction * playerLength * 1000))])
+    } else if (spotifyPlayer && spotifyPlayer.canSeek && spotifyPlayer.lengthSupported) {
+      var target = fraction * spotifyPlayer.length
+      spotifyPlayer.seek(target - spotifyPlayer.position)
+    }
+  }
+  function setVolume(v) {
+    if (!runSpotifyControl(["volume", String(Math.round(v * 100))])
+        && spotifyPlayer && spotifyPlayer.volumeSupported)
+      spotifyPlayer.volume = v
+  }
+  function toggleShuffle() {
+    if (!runSpotifyControl(["shuffle", playerShuffle ? "false" : "true"])
+        && spotifyPlayer && spotifyPlayer.shuffleSupported)
+      spotifyPlayer.shuffle = !spotifyPlayer.shuffle
+  }
   function toggleLoop() {
-    if (!spotifyPlayer || !spotifyPlayer.loopSupported) return
-    // Cycle None -> Track -> Playlist -> None.
-    spotifyPlayer.loopState = (spotifyPlayer.loopState + 1) % 3
+    var next = playerRepeatState === "off" ? "track"
+      : (playerRepeatState === "track" ? "context" : "off")
+    if (!runSpotifyControl(["repeat", next]) && spotifyPlayer && spotifyPlayer.loopSupported)
+      spotifyPlayer.loopState = (spotifyPlayer.loopState + 1) % 3
   }
 
   function refreshSpotifyAuthStatus() {
     spotifyStatusProbe.running = false
     spotifyStatusProbe.running = true
+  }
+
+  function scheduleScreensaverPreferenceSave() {
+    savingScreensaverPreferences = true
+    screensaverPreferenceSavePending = true
+    screensaverSettingsError = ""
+    preferencesSaveTimer.restart()
+  }
+
+  function toggleBeatReactive() {
+    beatReactiveEnabled = !beatReactiveEnabled
+    scheduleScreensaverPreferenceSave()
+  }
+
+  function saveBeatSensitivity(value) {
+    beatSensitivity = value
+    scheduleScreensaverPreferenceSave()
+  }
+
+  function saveCustomText(text) {
+    var mode = text.trim() === "" ? "track" : "custom"
+    if (text === screensaverCustomText && mode === screensaverTextMode) return
+    screensaverCustomText = text
+    screensaverTextMode = mode
+    scheduleScreensaverPreferenceSave()
+  }
+
+  function spotifyDeviceOptions() {
+    var options = []
+    for (var i = 0; i < spotifyDevices.length; i++) {
+      var device = spotifyDevices[i]
+      var type = String(device.type || "").toLowerCase()
+      var suffix = type ? " · " + type : ""
+      options.push({
+        value: String(device.id || ""),
+        label: (device.is_active ? "● " : "") + String(device.name || "Unknown device") + suffix
+      })
+    }
+    if (options.length === 0) {
+      options.push({
+        value: "",
+        label: loadingSpotifyDevices ? "Loading devices..." : "No devices found"
+      })
+    }
+    return options
+  }
+
+  function refreshSpotifyDevices() {
+    if (!spotifyLoggedIn || devicesProcess.running) return
+    loadingSpotifyDevices = true
+    deviceError = ""
+    devicesProcess.running = false
+    devicesProcess.running = true
+  }
+
+  function refreshRemotePlayer() {
+    if (!spotifyLoggedIn || nowPlayingProcess.running) return
+    nowPlayingProcess.running = true
+  }
+
+  function transferSpotifyPlayback(deviceId) {
+    if (!deviceId || deviceId === selectedSpotifyDeviceId) return
+    switchingSpotifyDevice = true
+    deviceError = ""
+    transferProcess.command = ["python3", root.spotifyHelperPath, "transfer", deviceId]
+    transferProcess.running = false
+    transferProcess.running = true
   }
 
   function runSearch(query) {
@@ -106,22 +262,23 @@ BarWidget {
   }
 
   function playSearchResult(uri) {
-    Quickshell.execDetached(["python3", root.spotifyHelperPath, "play", uri])
+    searchError = ""
+    startingPlayback = true
+    playProcess.command = ["python3", root.spotifyHelperPath, "play", uri]
+    if (selectedSpotifyDeviceId)
+      playProcess.command.push(selectedSpotifyDeviceId)
+    playProcess.running = false
+    playProcess.running = true
   }
 
-  function startSpotifyLogin() {
-    Quickshell.execDetached(["python3", root.spotifyHelperPath, "auth"])
-  }
-
-  function saveClientIdAndLogin(clientId) {
-    clientId = clientId.trim()
-    if (!clientId) return
-    // setup writes the Client ID synchronously, then auth (detached) opens
-    // the browser -- run them back to back so one click on "Save & Connect"
-    // does the whole one-time setup.
-    setupProcess.command = ["python3", root.spotifyHelperPath, "setup", clientId]
-    setupProcess.running = false
-    setupProcess.running = true
+  function startSpotifySetup() {
+    searchError = ""
+    connectingSpotify = true
+    spotifySetupProcess.command = spotifyLoggedIn
+      ? ["python3", root.spotifyHelperPath, "device", "setup"]
+      : ["python3", root.spotifyHelperPath, "setup"]
+    spotifySetupProcess.running = false
+    spotifySetupProcess.running = true
   }
 
   function ingest(line) {
@@ -140,7 +297,15 @@ BarWidget {
     probe.running = true
   }
 
-  onPopupOpenChanged: if (popupOpen) refreshSpotifyAuthStatus()
+  onPopupOpenChanged: {
+    if (popupOpen) {
+      refreshSpotifyAuthStatus()
+      refreshSpotifyDevices()
+      refreshRemotePlayer()
+    }
+  }
+
+  Component.onCompleted: refreshSpotifyAuthStatus()
 
   GlobalShortcut {
     appid: "io.github.docwatz.omarchyss"
@@ -169,10 +334,13 @@ BarWidget {
   // Advances the popup's progress bar smoothly between MPRIS position
   // updates (which only arrive on track/seek changes, not every second).
   Timer {
-    interval: 1000
-    running: root.popupOpen && root.spotifyPlayer && root.spotifyPlayer.isPlaying
+    interval: root.remotePlayerActive ? 2000 : 1000
+    running: root.popupOpen && root.hasPlayer
     repeat: true
-    onTriggered: if (root.spotifyPlayer) root.spotifyPlayer.positionChanged()
+    onTriggered: {
+      if (root.remotePlayerActive) root.refreshRemotePlayer()
+      else if (root.spotifyPlayer) root.spotifyPlayer.positionChanged()
+    }
   }
 
   Process {
@@ -185,10 +353,151 @@ BarWidget {
           var s = JSON.parse(text)
           root.spotifyConfigured = s.configured === true
           root.spotifyLoggedIn = s.loggedIn === true
+          root.spotifyPlaybackReady = s.playbackReady === true
+          root.spotifyDeviceRunning = s.deviceRunning === true
+          var preferences = s.preferences || {}
+          if (!root.savingScreensaverPreferences) {
+            if (preferences.beatReactive !== undefined)
+              root.beatReactiveEnabled = preferences.beatReactive === true
+            if (preferences.beatSensitivity !== undefined)
+              root.beatSensitivity = String(preferences.beatSensitivity)
+            if (preferences.customText !== undefined)
+              root.screensaverCustomText = String(preferences.customText)
+            if (preferences.textMode !== undefined)
+              root.screensaverTextMode = String(preferences.textMode)
+          }
+          if (root.spotifyLoggedIn) {
+            root.refreshSpotifyDevices()
+            root.refreshRemotePlayer()
+          }
         } catch (e) {
           root.spotifyConfigured = false
           root.spotifyLoggedIn = false
+          root.spotifyPlaybackReady = false
+          root.spotifyDeviceRunning = false
         }
+      }
+    }
+  }
+
+  Process {
+    id: preferencesProcess
+    stderr: StdioCollector {
+      id: preferencesStderr
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.screensaverSettingsError = String(preferencesStderr.text || "").trim()
+          || "Could not save screensaver settings."
+      }
+      if (root.screensaverPreferenceSavePending)
+        preferencesSaveTimer.restart()
+      else {
+        root.savingScreensaverPreferences = false
+        if (exitCode === 0 && root.running)
+          Quickshell.execDetached(root.screensaverCommand("restart"))
+      }
+    }
+  }
+
+  Timer {
+    id: preferencesSaveTimer
+    interval: 250
+    repeat: false
+    onTriggered: {
+      if (preferencesProcess.running) {
+        restart()
+        return
+      }
+      root.screensaverPreferenceSavePending = false
+      preferencesProcess.command = [
+        "python3", root.spotifyHelperPath, "preferences", "set",
+        "beatReactive", root.beatReactiveEnabled ? "true" : "false",
+        "beatSensitivity", root.beatSensitivity,
+        "customText", root.screensaverCustomText,
+        "textMode", root.screensaverTextMode
+      ]
+      preferencesProcess.running = true
+    }
+  }
+
+  Timer {
+    id: customTextSaveTimer
+    interval: 500
+    repeat: false
+    onTriggered: root.saveCustomText(customScreensaverText.text)
+  }
+
+  Process {
+    id: nowPlayingProcess
+    command: ["python3", root.spotifyHelperPath, "now-playing"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          root.remotePlayer = JSON.parse(text)
+        } catch (e) {
+          root.remotePlayer = ({})
+        }
+      }
+    }
+  }
+
+  Process {
+    id: controlProcess
+    stderr: StdioCollector {
+      id: controlStderr
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.deviceError = String(controlStderr.text || "").trim()
+          || "Spotify control failed."
+      }
+      root.refreshRemotePlayer()
+      root.refreshSpotifyDevices()
+    }
+  }
+
+  Process {
+    id: devicesProcess
+    command: ["python3", root.spotifyHelperPath, "devices"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.loadingSpotifyDevices = false
+        try {
+          root.spotifyDevices = JSON.parse(text)
+          root.selectedSpotifyDeviceId = ""
+          for (var i = 0; i < root.spotifyDevices.length; i++) {
+            if (root.spotifyDevices[i].is_active) {
+              root.selectedSpotifyDeviceId = String(root.spotifyDevices[i].id || "")
+              break
+            }
+          }
+        } catch (e) {
+          root.spotifyDevices = []
+          root.deviceError = "Could not load Spotify devices."
+        }
+      }
+    }
+  }
+
+  Process {
+    id: transferProcess
+    stderr: StdioCollector {
+      id: transferStderr
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      root.switchingSpotifyDevice = false
+      if (exitCode === 0) {
+        root.refreshSpotifyDevices()
+        root.refreshRemotePlayer()
+      } else {
+        root.deviceError = String(transferStderr.text || "").trim()
+          || "Could not switch Spotify devices."
       }
     }
   }
@@ -209,19 +518,35 @@ BarWidget {
     }
   }
 
-  // Writes the Client ID (setup) then opens the browser login (auth) as one
-  // click from the popup -- setup exits quickly so onExited chains straight
-  // into the detached, longer-lived auth process.
   Process {
-    id: setupProcess
-    running: false
+    id: playProcess
+    stderr: StdioCollector {
+      id: playStderr
+      waitForEnd: true
+    }
     onExited: function(exitCode) {
+      root.startingPlayback = false
+      if (exitCode !== 0) {
+        root.searchError = String(playStderr.text || "").trim()
+          || "Could not start playback. Open Spotify, start any song once, then try again."
+      }
+      root.refreshRemotePlayer()
+      root.refreshSpotifyDevices()
+    }
+  }
+
+  Process {
+    id: spotifySetupProcess
+    stderr: StdioCollector {
+      id: spotifySetupStderr
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      root.connectingSpotify = false
       root.refreshSpotifyAuthStatus()
-      if (exitCode === 0) {
-        root.startSpotifyLogin()
-        spotifyRecheck.start()
-      } else {
-        root.searchError = "Could not save Client ID. Check it's correct and try again."
+      if (exitCode !== 0) {
+        root.searchError = String(spotifySetupStderr.text || "").trim()
+          || "Spotify setup failed. Try again."
       }
     }
   }
@@ -246,25 +571,45 @@ BarWidget {
     onWheelMoved: function(delta) { if (delta > 0) root.previousTrack(); else root.nextTrack() }
   }
 
-  PopupCard {
+  KeyboardPanel {
     id: popup
     anchorItem: root
     bar: root.bar
     owner: root
     open: root.popupOpen
+    focusTarget: popupFocusTarget
     contentWidth: popup.fittedContentWidth(Style.space(320))
     contentHeight: popup.fittedContentHeight(column.implicitHeight)
 
-    Column {
-      id: column
+    Flickable {
+      id: popupScroll
       anchors.fill: parent
-      spacing: Style.space(10)
+      contentWidth: width
+      contentHeight: column.implicitHeight
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
+      flickableDirection: Flickable.VerticalFlick
+      interactive: contentHeight > height
+      ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+      Column {
+        id: column
+        width: popupScroll.width
+        spacing: Style.space(10)
+
+        Item {
+          id: popupFocusTarget
+          width: 1
+          height: 1
+          focus: true
+          Keys.onEscapePressed: root.close()
+        }
 
       // --- Now playing -------------------------------------------------
       Row {
         spacing: Style.space(10)
         width: parent.width
-        visible: root.spotifyPlayer !== null
+        visible: root.hasPlayer
 
         BorderSurface {
           width: Style.space(64)
@@ -278,13 +623,13 @@ BarWidget {
             anchors.margins: Style.space(2)
             fillMode: Image.PreserveAspectCrop
             asynchronous: true
-            source: root.spotifyPlayer && root.spotifyPlayer.trackArtUrl ? root.spotifyPlayer.trackArtUrl : ""
+            source: root.playerArtUrl
             visible: source !== ""
           }
 
           Text {
             anchors.centerIn: parent
-            visible: !root.spotifyPlayer || !root.spotifyPlayer.trackArtUrl
+            visible: root.playerArtUrl === ""
             text: "󰝚"
             color: root.bar.foreground
             font.family: root.bar.fontFamily
@@ -297,7 +642,7 @@ BarWidget {
           width: parent.width - Style.space(74)
 
           Text {
-            text: root.spotifyPlayer ? (root.spotifyPlayer.trackTitle || "Nothing playing") : "No player found"
+            text: root.playerTrackTitle || "Nothing playing"
             color: root.bar.foreground
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.subtitle
@@ -307,7 +652,7 @@ BarWidget {
           }
 
           Text {
-            text: root.spotifyPlayer ? (root.spotifyPlayer.trackArtist || "") : ""
+            text: root.playerTrackArtist
             color: Qt.darker(root.bar.foreground, 1.3)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -322,29 +667,28 @@ BarWidget {
       Column {
         width: parent.width
         spacing: Style.space(2)
-        visible: root.spotifyPlayer !== null && root.spotifyPlayer.lengthSupported
+        visible: root.hasPlayer && root.playerLength > 0
 
         Slider {
           id: seekSlider
           width: parent.width
           from: 0
           to: 1
-          value: root.spotifyPlayer && root.spotifyPlayer.length > 0
-            ? root.spotifyPlayer.position / root.spotifyPlayer.length : 0
-          enabled: root.spotifyPlayer && root.spotifyPlayer.canSeek
+          value: root.playerLength > 0 ? root.playerPosition / root.playerLength : 0
+          enabled: root.remotePlayerActive || (root.spotifyPlayer && root.spotifyPlayer.canSeek)
           onMoved: root.seekToFraction(value)
         }
 
         Row {
           width: parent.width
           Text {
-            text: root.spotifyPlayer ? root.fmtTime(root.spotifyPlayer.position) : "0:00"
+            text: root.fmtTime(root.playerPosition)
             color: Qt.darker(root.bar.foreground, 1.4)
             font.pixelSize: Style.font.caption
           }
           Item { width: parent.width - Style.space(80); height: 1 }
           Text {
-            text: root.spotifyPlayer ? root.fmtTime(root.spotifyPlayer.length) : "0:00"
+            text: root.fmtTime(root.playerLength)
             color: Qt.darker(root.bar.foreground, 1.4)
             font.pixelSize: Style.font.caption
           }
@@ -355,13 +699,13 @@ BarWidget {
       Row {
         anchors.horizontalCenter: parent.horizontalCenter
         spacing: Style.space(14)
-        visible: root.spotifyPlayer !== null
+        visible: root.hasPlayer
 
         BarIconButton {
           width: Style.space(28); height: Style.space(28)
           bar: root.bar
           text: "󰒞"
-          active: root.spotifyPlayer && root.spotifyPlayer.shuffle
+          active: root.playerShuffle
           activeColor: Color.accent
           tooltipText: "Shuffle"
           onPressed: root.toggleShuffle()
@@ -376,7 +720,7 @@ BarWidget {
         BarIconButton {
           width: Style.space(36); height: Style.space(36)
           bar: root.bar
-          text: root.spotifyPlayer && root.spotifyPlayer.isPlaying ? "󰏤" : "󰐊"
+          text: root.playerIsPlaying ? "󰏤" : "󰐊"
           activeColor: Color.accent
           tooltipText: "Play/Pause"
           onPressed: root.playPause()
@@ -391,8 +735,8 @@ BarWidget {
         BarIconButton {
           width: Style.space(28); height: Style.space(28)
           bar: root.bar
-          text: root.spotifyPlayer && root.spotifyPlayer.loopState === 2 ? "󰑘" : "󰑖"
-          active: root.spotifyPlayer && root.spotifyPlayer.loopState !== 0
+          text: root.playerRepeatState === "track" ? "󰑘" : "󰑖"
+          active: root.playerRepeatState !== "off"
           activeColor: Color.accent
           tooltipText: "Repeat"
           onPressed: root.toggleLoop()
@@ -403,7 +747,7 @@ BarWidget {
       Row {
         width: parent.width
         spacing: Style.space(8)
-        visible: root.spotifyPlayer !== null && root.spotifyPlayer.volumeSupported
+        visible: root.hasPlayer && root.playerVolumeSupported
 
         Text {
           text: "󰕾"
@@ -414,8 +758,125 @@ BarWidget {
           width: parent.width - Style.space(24)
           from: 0
           to: 1
-          value: root.spotifyPlayer ? root.spotifyPlayer.volume : 0
+          value: root.playerVolume
           onMoved: root.setVolume(value)
+        }
+      }
+
+      // --- Spotify Connect device -----------------------------------------
+      Row {
+        width: parent.width
+        spacing: Style.space(6)
+        visible: root.spotifyLoggedIn
+
+        Dropdown {
+          width: parent.width - Style.space(36)
+          label: "Playback device"
+          fontFamily: root.bar.fontFamily
+          options: root.spotifyDeviceOptions()
+          value: root.selectedSpotifyDeviceId
+          onChanged: function(value) { root.transferSpotifyPlayback(value) }
+        }
+
+        BarIconButton {
+          width: Style.space(28); height: Style.space(28)
+          anchors.bottom: parent.bottom
+          bar: root.bar
+          text: root.loadingSpotifyDevices || root.switchingSpotifyDevice ? "󰑓" : "󰑐"
+          enabled: !root.loadingSpotifyDevices && !root.switchingSpotifyDevice
+          tooltipText: "Refresh Spotify devices"
+          onPressed: root.refreshSpotifyDevices()
+        }
+      }
+
+      Text {
+        visible: root.deviceError !== ""
+        width: parent.width
+        wrapMode: Text.WordWrap
+        text: root.deviceError
+        color: Color.accent
+        font.pixelSize: Style.font.caption
+      }
+
+      // --- Screensaver ----------------------------------------------------
+      Column {
+        width: parent.width
+        spacing: Style.space(6)
+
+        Text {
+          text: "Screensaver"
+          color: root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(8)
+
+          Text {
+            width: parent.width - beatToggle.width - parent.spacing
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Beat-reactive effects"
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          ToggleSwitch {
+            id: beatToggle
+            anchors.verticalCenter: parent.verticalCenter
+            checked: root.beatReactiveEnabled
+            busy: root.savingScreensaverPreferences
+            foreground: root.bar.foreground
+            accent: Color.accent
+            onToggled: root.toggleBeatReactive()
+          }
+        }
+
+        Dropdown {
+          width: parent.width
+          label: "Beat sensitivity"
+          fontFamily: root.bar.fontFamily
+          options: [
+            { value: "low", label: "Low" },
+            { value: "medium", label: "Medium" },
+            { value: "high", label: "High" }
+          ]
+          value: root.beatSensitivity
+          onChanged: function(value) { root.saveBeatSensitivity(value) }
+        }
+
+        TextField {
+          id: customScreensaverText
+          width: parent.width
+          text: root.screensaverCustomText
+          placeholderText: "Custom text (blank uses artist and track)"
+          onTextEdited: customTextSaveTimer.restart()
+          onAccepted: root.saveCustomText(text)
+          onEditingFinished: root.saveCustomText(text)
+          Keys.onEscapePressed: root.close()
+        }
+
+        Text {
+          visible: root.running
+          width: parent.width
+          wrapMode: Text.WordWrap
+          text: root.savingScreensaverPreferences
+            ? "Applying changes..."
+            : "Changes apply to the running screensaver."
+          color: Qt.darker(root.bar.foreground, 1.3)
+          font.pixelSize: Style.font.caption
+        }
+
+        Text {
+          visible: root.screensaverSettingsError !== ""
+          width: parent.width
+          wrapMode: Text.WordWrap
+          text: root.screensaverSettingsError
+          color: Color.accent
+          font.pixelSize: Style.font.caption
         }
       }
 
@@ -442,6 +903,7 @@ BarWidget {
             width: parent.width - Style.space(60)
             placeholderText: "Song, artist..."
             onAccepted: root.runSearch(text)
+            Keys.onEscapePressed: root.close()
           }
           BarIconButton {
             width: Style.space(28); height: Style.space(28)
@@ -453,62 +915,41 @@ BarWidget {
         }
 
         Text {
-          visible: !root.spotifyLoggedIn && root.spotifyConfigured
+          visible: !root.spotifyLoggedIn || !root.spotifyPlaybackReady
           width: parent.width
           wrapMode: Text.WordWrap
           color: Qt.darker(root.bar.foreground, 1.3)
           font.pixelSize: Style.font.caption
-          text: "Not connected. Click to log in to Spotify."
+          text: root.spotifyLoggedIn
+            ? "Authorize Spotify once to enable OmarchySS's built-in playback device."
+            : "Connect Spotify once to enable search and built-in playback."
         }
         BarIconButton {
-          visible: !root.spotifyLoggedIn && root.spotifyConfigured
+          visible: !root.spotifyLoggedIn || !root.spotifyPlaybackReady
           width: Style.space(28); height: Style.space(28)
           bar: root.bar
           text: "󰀄"
-          tooltipText: "Connect Spotify"
-          onPressed: { root.startSpotifyLogin(); Qt.callLater(function() { spotifyRecheck.start() }) }
+          enabled: !root.connectingSpotify
+          tooltipText: root.spotifyLoggedIn ? "Authorize playback" : "Connect Spotify"
+          onPressed: { root.startSpotifySetup(); Qt.callLater(function() { spotifyRecheck.start() }) }
         }
 
-        // One-time setup: paste a Spotify app Client ID (from
-        // developer.spotify.com/dashboard, redirect URI
-        // http://127.0.0.1:8945/callback) and this saves it, then opens the
-        // browser login in one step. Only shown until setup is done.
-        Column {
-          width: parent.width
-          spacing: Style.space(4)
-          visible: !root.spotifyConfigured
-
-          Text {
-            width: parent.width
-            wrapMode: Text.WordWrap
-            color: Qt.darker(root.bar.foreground, 1.3)
-            font.pixelSize: Style.font.caption
-            text: "One-time setup: paste your Spotify app's Client ID (redirect URI must be http://127.0.0.1:8945/callback)."
-          }
-
-          Row {
-            width: parent.width
-            spacing: Style.space(6)
-
-            TextField {
-              id: clientIdField
-              width: parent.width - Style.space(60)
-              placeholderText: "Spotify Client ID"
-              onAccepted: root.saveClientIdAndLogin(text)
-            }
-            BarIconButton {
-              width: Style.space(28); height: Style.space(28)
-              bar: root.bar
-              text: "󰄬"
-              tooltipText: "Save & connect"
-              onPressed: root.saveClientIdAndLogin(clientIdField.text)
-            }
-          }
+        Text {
+          visible: root.connectingSpotify
+          text: "Waiting for Spotify authorization..."
+          color: Qt.darker(root.bar.foreground, 1.3)
+          font.pixelSize: Style.font.caption
         }
 
         Text {
           visible: root.searching
           text: "Searching..."
+          color: Qt.darker(root.bar.foreground, 1.3)
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          visible: root.startingPlayback
+          text: "Starting playback..."
           color: Qt.darker(root.bar.foreground, 1.3)
           font.pixelSize: Style.font.caption
         }
@@ -538,6 +979,7 @@ BarWidget {
               width: Style.space(24); height: Style.space(24)
               bar: root.bar
               text: "󰐊"
+              enabled: root.spotifyPlaybackReady && !root.startingPlayback
               tooltipText: "Play"
               onPressed: root.playSearchResult(modelData.uri)
             }
@@ -545,6 +987,7 @@ BarWidget {
         }
       }
     }
+  }
   }
 
   // Spotify's OAuth login runs in a background helper (auth opens the
@@ -558,7 +1001,7 @@ BarWidget {
     onTriggered: {
       ticks += 1
       root.refreshSpotifyAuthStatus()
-      if (ticks >= 15 || root.spotifyLoggedIn) { ticks = 0; stop() }
+      if (ticks >= 90 || (root.spotifyLoggedIn && root.spotifyPlaybackReady)) { ticks = 0; stop() }
     }
   }
 }

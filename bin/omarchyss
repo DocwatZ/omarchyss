@@ -5,20 +5,83 @@ readonly APP_CLASS="io.github.docwatz.omarchyss"
 readonly STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/omarchyss-${UID}"
 readonly STATE_FILE="$STATE_DIR/spotify-was-playing"
 readonly BRANDING_FILE="${HOME}/.config/omarchy/branding/screensaver.txt"
+readonly SPOTIFY_HELPER="$(dirname "$(readlink -f "$0")")/omarchyss-spotify"
 
 mkdir -p -m 700 "$STATE_DIR"
 
 have() { command -v "$1" >/dev/null 2>&1; }
-spotify_available() { have playerctl && playerctl --player=spotify status >/dev/null 2>&1; }
+
+spotify_player() {
+  have playerctl || return 1
+  local player state spotifyd_player="" spotify_player_name=""
+  while IFS= read -r player; do
+    state=$(playerctl --player="$player" status 2>/dev/null || true)
+    [[ $state == Playing && $player == spotifyd* ]] && { printf '%s' "$player"; return; }
+    [[ $state == Playing && $player == spotify ]] && spotify_player_name=$player
+    [[ $player == spotifyd* ]] && spotifyd_player=$player
+    [[ $player == spotify ]] && spotify_player_name=$player
+  done < <(playerctl -l 2>/dev/null)
+  [[ -n $spotifyd_player ]] && { printf '%s' "$spotifyd_player"; return; }
+  [[ -n $spotify_player_name ]] && printf '%s' "$spotify_player_name"
+}
+
+spotifyctl() {
+  local player
+  player=$(spotify_player) || return 1
+  playerctl --player="$player" "$@"
+}
+
+spotify_cloud_json() {
+  [[ -x $SPOTIFY_HELPER ]] && python3 "$SPOTIFY_HELPER" now-playing 2>/dev/null
+}
+
+spotify_status() {
+  local cloud
+  cloud=$(spotify_cloud_json || true)
+  if [[ -n $cloud ]] && jq -e '.active == true' >/dev/null 2>&1 <<< "$cloud"; then
+    [[ $(jq -r '.isPlaying' <<< "$cloud") == true ]] && printf 'Playing' || printf 'Paused'
+  else
+    spotifyctl status 2>/dev/null
+  fi
+}
+
+spotify_track() {
+  local cloud
+  cloud=$(spotify_cloud_json || true)
+  if [[ -n $cloud ]] && jq -e '.active == true' >/dev/null 2>&1 <<< "$cloud"; then
+    jq -r '[.artists, .title] | map(select(length > 0)) | join(" — ")' <<< "$cloud"
+  else
+    spotifyctl metadata --format '{{artist}} — {{title}}' 2>/dev/null
+  fi
+}
+
+spotify_action() {
+  local action=$1
+  if [[ -x $SPOTIFY_HELPER ]] && python3 "$SPOTIFY_HELPER" control "$action" >/dev/null 2>&1; then
+    return
+  fi
+  spotifyctl "$action"
+}
+
+spotify_available() { [[ -n $(spotify_status || true) ]]; }
+
+screensaver_running() {
+  have hyprctl && hyprctl clients -j |
+    jq -e --arg class "$APP_CLASS" '.[] | select(.class == $class)' >/dev/null 2>&1
+}
 
 status() {
-  local running=false playback="" track=""
-  if have hyprctl && hyprctl clients -j | jq -e --arg class "$APP_CLASS" '.[] | select(.class == $class)' >/dev/null 2>&1; then
+  local running=false playback="" track="" cloud
+  if screensaver_running; then
     running=true
   fi
-  if spotify_available; then
-    playback=$(playerctl --player=spotify status 2>/dev/null || true)
-    track=$(playerctl --player=spotify metadata --format '{{artist}} — {{title}}' 2>/dev/null || true)
+  cloud=$(spotify_cloud_json || true)
+  if [[ -n $cloud ]] && jq -e '.active == true' >/dev/null 2>&1 <<< "$cloud"; then
+    [[ $(jq -r '.isPlaying' <<< "$cloud") == true ]] && playback=Playing || playback=Paused
+    track=$(jq -r '[.artists, .title] | map(select(length > 0)) | join(" — ")' <<< "$cloud")
+  elif spotify_available; then
+    playback=$(spotifyctl status 2>/dev/null || true)
+    track=$(spotifyctl metadata --format '{{artist}} — {{title}}' 2>/dev/null || true)
   fi
   jq -nc --argjson running "$running" --arg playback "$playback" --arg track "$track" \
     '{running: $running, playback: $playback, track: $track}'
@@ -26,19 +89,21 @@ status() {
 
 stop() {
   if have hyprctl; then
-    hyprctl clients -j | jq -r --arg class "$APP_CLASS" '.[] | select(.class == $class) | .address' |
-      while IFS= read -r address; do hyprctl dispatch closewindow "address:$address" >/dev/null; done
+    local pid
+    while IFS= read -r pid; do
+      [[ $pid =~ ^[0-9]+$ ]] && kill "$pid" 2>/dev/null || true
+    done < <(hyprctl clients -j | jq -r --arg class "$APP_CLASS" '.[] | select(.class == $class) | .pid')
   fi
-  if [[ -f $STATE_FILE ]] && spotify_available; then playerctl --player=spotify play; fi
+  if [[ -f $STATE_FILE ]] && spotify_available; then spotify_action play || true; fi
   rm -f "$STATE_FILE"
 }
 
 media() {
   spotify_available || exit 0
   case "${1:-}" in
-    play-pause) playerctl --player=spotify play-pause ;;
-    next) playerctl --player=spotify next ;;
-    previous) playerctl --player=spotify previous ;;
+    play-pause) spotify_action play-pause ;;
+    next) spotify_action next ;;
+    previous) spotify_action previous ;;
     *) exit 2 ;;
   esac
 }
@@ -52,8 +117,12 @@ determine_text() {
   local text_mode=$1 custom_text=$2
   case "$text_mode" in
     track)
-      if spotify_available; then
-        playerctl --player=spotify metadata --format '{{artist}}
+      local cloud
+      cloud=$(spotify_cloud_json || true)
+      if [[ -n $cloud ]] && jq -e '.active == true' >/dev/null 2>&1 <<< "$cloud"; then
+        jq -r '.artists, .title' <<< "$cloud"
+      elif spotify_available; then
+        spotifyctl metadata --format '{{artist}}
 {{title}}'
       else
         printf 'OMARCHYSS'
@@ -196,40 +265,147 @@ render_text() {
   fi
 }
 
-wait_for_audio_frame() {
-  have cava || return 0
-  local config fifo cava_pid frame
-  config=$(mktemp "${STATE_DIR}/cava.XXXXXX")
-  fifo=$(mktemp -u "${STATE_DIR}/cava.XXXXXX")
-  mkfifo -m 600 "$fifo"
-  cat > "$config" <<EOF
+BEAT_CONFIG=""
+BEAT_PID=""
+BEAT_FD=""
+BEAT_WRITE_FD=""
+BEAT_BASELINE=0
+BEAT_HAVE_BASELINE=false
+BEAT_FRAMES=0
+BEAT_COOLDOWN=0
+BEAT_THRESHOLD_PERCENT=125
+BEAT_COOLDOWN_FRAMES=6
+
+start_beat_detector() {
+  have cava || return 1
+  BEAT_CONFIG=$(mktemp "${STATE_DIR}/cava.XXXXXX")
+  cat > "$BEAT_CONFIG" <<EOF
+[general]
+bars = 16
+framerate = 30
+
 [input]
 method = pipewire
 source = auto
+
 [output]
 method = raw
-raw_target = $fifo
+raw_target = /dev/stdout
 data_format = ascii
 ascii_max_range = 1000
+bar_delimiter = 59
+frame_delimiter = 10
 EOF
-  cava -p "$config" >/dev/null 2>&1 &
-  cava_pid=$!
-  IFS= read -r -t 2 frame < "$fifo" || true
-  kill "$cava_pid" 2>/dev/null || true
-  wait "$cava_pid" 2>/dev/null || true
-  rm -f "$config" "$fifo"
+  coproc BEAT_CAVA { exec cava -p "$BEAT_CONFIG" 2>/dev/null; }
+  BEAT_PID=$BEAT_CAVA_PID
+  BEAT_FD=${BEAT_CAVA[0]}
+  BEAT_WRITE_FD=${BEAT_CAVA[1]}
+  BEAT_BASELINE=0
+  BEAT_HAVE_BASELINE=false
+  BEAT_FRAMES=0
+  BEAT_COOLDOWN=0
+  local first_frame
+  if ! IFS= read -r -t 2 -u "$BEAT_FD" first_frame; then
+    stop_beat_detector
+    return 1
+  fi
+  audio_frame_is_beat "$first_frame" || true
+}
+
+stop_beat_detector() {
+  if [[ -n $BEAT_PID ]]; then
+    kill "$BEAT_PID" 2>/dev/null || true
+    wait "$BEAT_PID" 2>/dev/null || true
+  fi
+  [[ -n $BEAT_FD ]] && exec {BEAT_FD}<&- || true
+  [[ -n $BEAT_WRITE_FD ]] && exec {BEAT_WRITE_FD}>&- || true
+  [[ -n $BEAT_CONFIG ]] && rm -f "$BEAT_CONFIG"
+  BEAT_CONFIG=""
+  BEAT_PID=""
+  BEAT_FD=""
+  BEAT_WRITE_FD=""
+}
+
+audio_frame_is_beat() {
+  local frame=$1 value energy=0 count=0 is_beat=false
+  local -a bars
+  IFS=';' read -ra bars <<< "$frame"
+
+  # Cava orders bars from low to high frequencies. Bass energy gives a much
+  # cleaner beat signal than averaging the entire spectrum, especially for
+  # vocals and sustained instruments.
+  for value in "${bars[@]:0:6}"; do
+    [[ $value =~ ^[0-9]+$ ]] || continue
+    energy=$((energy + value))
+    count=$((count + 1))
+  done
+  (( count > 0 )) || return 1
+  energy=$((energy / count))
+
+  # Compare against the baseline before folding in the current frame, so the
+  # transient does not raise its own threshold.
+  if [[ $BEAT_HAVE_BASELINE == true ]] \
+      && (( BEAT_FRAMES >= 15 && energy >= 40 && energy * 100 >= BEAT_BASELINE * BEAT_THRESHOLD_PERCENT )) \
+      && (( BEAT_COOLDOWN == 0 )); then
+    is_beat=true
+  fi
+
+  if [[ $BEAT_HAVE_BASELINE == false ]]; then
+    BEAT_BASELINE=$energy
+    BEAT_HAVE_BASELINE=true
+  else
+    BEAT_BASELINE=$(( (BEAT_BASELINE * 15 + energy) / 16 ))
+  fi
+  BEAT_FRAMES=$((BEAT_FRAMES + 1))
+
+  if (( BEAT_COOLDOWN > 0 )); then
+    BEAT_COOLDOWN=$((BEAT_COOLDOWN - 1))
+  fi
+
+  # A six-frame cooldown caps effect changes at five per second while still
+  # following quick drum patterns.
+  if [[ $is_beat == true ]]; then
+    BEAT_COOLDOWN=$BEAT_COOLDOWN_FRAMES
+    return 0
+  fi
+  return 1
+}
+
+wait_for_beat_frame() {
+  local frame frames=0
+  [[ -n $BEAT_FD ]] || return 2
+  while (( frames < 30 )); do
+    kill -0 "$RUN_EFFECT_PID" 2>/dev/null || return 1
+    if ! IFS= read -r -t 1 -u "$BEAT_FD" frame; then
+      kill -0 "$BEAT_PID" 2>/dev/null || return 2
+      return 1
+    fi
+    frames=$((frames + 1))
+    audio_frame_is_beat "$frame" && return 0
+  done
+  return 1
+}
+
+drain_audio_frames() {
+  local frame frames=0
+  [[ -n $BEAT_FD ]] || return 0
+  while (( frames < 60 )) && IFS= read -r -t 0.01 -u "$BEAT_FD" frame; do
+    audio_frame_is_beat "$frame" || true
+    frames=$((frames + 1))
+  done
 }
 
 start() {
-  local effect=random text_mode=track custom_text="" pause_spotify=true timeout=0 beat_reactive=false font_size=28
+  local effect=random text_mode=track custom_text="" pause_spotify=true timeout=0 beat_reactive=false beat_sensitivity=medium font_size=28
   local use_figlet=false figlet_font=""
   while (($#)); do
     case "$1" in
-      --effect|--text-mode|--custom-text|--pause-spotify|--timeout|--beat-reactive|--font-size|--use-figlet|--figlet-font)
+      --effect|--text-mode|--custom-text|--pause-spotify|--timeout|--beat-reactive|--beat-sensitivity|--font-size|--use-figlet|--figlet-font)
         [[ $# -ge 2 ]] || exit 2
         case "$1" in
           --effect) effect=$2 ;; --text-mode) text_mode=$2 ;; --custom-text) custom_text=$2 ;;
           --pause-spotify) pause_spotify=$2 ;; --timeout) timeout=$2 ;; --beat-reactive) beat_reactive=$2 ;;
+          --beat-sensitivity) beat_sensitivity=$2 ;;
           --font-size) font_size=$2 ;; --use-figlet) use_figlet=$2 ;; --figlet-font) figlet_font=$2 ;;
         esac
         shift 2 ;;
@@ -237,13 +413,13 @@ start() {
     esac
   done
   [[ $effect =~ ^(random|beams|bubbles|fireworks|matrix|rain|rings|spotlights|thunderstorm|waves)$ ]] || exit 2
-  if ! [[ $text_mode =~ ^(track|branding|custom)$ && $timeout =~ ^[0-9]+$ && $font_size =~ ^[0-9]+$ && $font_size -ge 6 && $font_size -le 72 ]]; then
+  if ! [[ $text_mode =~ ^(track|branding|custom)$ && $beat_sensitivity =~ ^(low|medium|high)$ && $timeout =~ ^[0-9]+$ && $font_size =~ ^[0-9]+$ && $font_size -ge 6 && $font_size -le 72 ]]; then
     echo "omarchyss: invalid start arguments (text-mode=$text_mode timeout=$timeout font-size=$font_size, must be 6-72)" >&2
     exit 2
   fi
-  if [[ $(status | jq -r .running) == true ]]; then stop; return; fi
-  if [[ $pause_spotify == true ]] && spotify_available && [[ $(playerctl --player=spotify status) == Playing ]]; then
-    : > "$STATE_FILE"; playerctl --player=spotify pause
+  if screensaver_running; then stop; return; fi
+  if [[ $pause_spotify == true && $beat_reactive != true ]] && spotify_available && [[ $(spotify_status) == Playing ]]; then
+    : > "$STATE_FILE"; spotify_action pause
   fi
   local self
   self=$(readlink -f "$0")
@@ -255,13 +431,13 @@ start() {
   # since the text now adapts to the window instead of the other way round.
   if have alacritty; then
     alacritty --class "$APP_CLASS,$APP_CLASS" --title "OmarchySS" --option "font.size=$font_size" \
-      -e bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" "$font_size" &
+      -e bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" "$font_size" "$beat_sensitivity" &
   elif have foot; then
     # foot has no standalone font-size key; override the whole font list with a
     # generic monospace fallback at the requested size. This may not match the
     # user's usual terminal font family when Alacritty is unavailable.
     foot --app-id="$APP_CLASS" --title="OmarchySS" --override="font=monospace:size=$font_size" \
-      bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" "$font_size" &
+      bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" "$font_size" "$beat_sensitivity" &
   else
     printf '%s\n' "OmarchySS requires Alacritty or Foot." >&2
     stop
@@ -269,51 +445,153 @@ start() {
   fi
 }
 
+restart() {
+  stop
+  local attempt
+  for attempt in {1..20}; do
+    screensaver_running || break
+    sleep 0.05
+  done
+  ! screensaver_running || {
+    printf '%s\n' "OmarchySS could not close the existing window." >&2
+    return 1
+  }
+  start "$@"
+}
+
 # Populated by run() before the EXIT trap is registered. It is intentionally a
 # global (not a function-local) so the trap can still clean it up after
 # `set -e` unwinds the whole script on a failing command -- traps run in the
 # top-level scope, where function-local variables are no longer visible.
 RUN_TMP=""
+RUN_EFFECT_PID=""
+
+cleanup_run() {
+  [[ -n $RUN_EFFECT_PID ]] && kill "$RUN_EFFECT_PID" 2>/dev/null || true
+  stop_beat_detector
+  rm -f "${RUN_TMP:-}"
+  stop || true
+  return 0
+}
+
+ttfx_effect_args() {
+  local effect=$1
+  if [[ -n $effect ]]; then
+    TTFX_ARGS=(-i "$RUN_TMP" --frame-rate 120 --canvas-width 0 --canvas-height 0 --reuse-canvas --anchor-canvas c --anchor-text c --no-eol --no-restore-cursor "$effect")
+  else
+    TTFX_ARGS=(-i "$RUN_TMP" --frame-rate 120 --canvas-width 0 --canvas-height 0 --reuse-canvas --anchor-canvas c --anchor-text c --random-effect --no-eol --no-restore-cursor)
+  fi
+}
+
+run_ttfx_effect() {
+  ttfx_effect_args "$1"
+  ttfx "${TTFX_ARGS[@]}"
+}
+
+exec_ttfx_effect() {
+  ttfx_effect_args "$1"
+  [[ -n $BEAT_FD ]] && exec {BEAT_FD}<&- || true
+  [[ -n $BEAT_WRITE_FD ]] && exec {BEAT_WRITE_FD}>&- || true
+  exec ttfx "${TTFX_ARGS[@]}"
+}
 
 run() {
   local effect=$1 text_mode=$2 custom_text=$3 timeout=$4 beat_reactive=$5
   USE_FIGLET=${6:-false}
   FIGLET_FONT_PATH=${7:-}
   FONT_SIZE_MAX=${8:-28}
-  local started=$SECONDS effect_arg raw_text
+  local beat_sensitivity=${9:-medium}
+  local started=$SECONDS effect_arg raw_text="" next_text detector_status effect_status effect_interrupted
+  local effect_index=0 last_text_refresh=-999 rendered_once=false
+  local -a TTFX_ARGS
+  have ttfx || { printf '%s\n' "OmarchySS requires ttfx." >&2; exit 1; }
+  case "$beat_sensitivity" in
+    low) BEAT_THRESHOLD_PERCENT=145; BEAT_COOLDOWN_FRAMES=8 ;;
+    medium) BEAT_THRESHOLD_PERCENT=125; BEAT_COOLDOWN_FRAMES=6 ;;
+    high) BEAT_THRESHOLD_PERCENT=112; BEAT_COOLDOWN_FRAMES=5 ;;
+  esac
+  local -a beat_effects=(beams bubbles fireworks matrix rain rings spotlights thunderstorm waves)
   RUN_TMP=$(mktemp "${STATE_DIR}/text.XXXXXX")
-  trap 'rm -f "${RUN_TMP:-}"; stop; exit' EXIT INT TERM HUP
+  trap 'cleanup_run; exit' EXIT INT TERM HUP
   printf '\033]11;rgb:00/00/00\007'
   # The terminal's initial size (whether from the Hyprland window rule or
   # Alacritty/foot's own defaults) can take a moment to land -- wait for it
   # to settle before the first render_text/fit_font_size_to_window call so
   # text isn't fitted against a stale, pre-resize size.
   read_settled_size >/dev/null
+  if [[ $beat_reactive == true ]]; then
+    start_beat_detector || beat_reactive=false
+    if [[ $effect == random ]]; then
+      effect_index=$((RANDOM % ${#beat_effects[@]}))
+    else
+      local i
+      for i in "${!beat_effects[@]}"; do
+        [[ ${beat_effects[$i]} == "$effect" ]] && { effect_index=$i; break; }
+      done
+    fi
+  fi
   while :; do
     (( timeout == 0 || SECONDS - started < timeout )) || exit 0
-    raw_text=$(determine_text "$text_mode" "$custom_text")
-    render_text "$raw_text"
-    [[ $beat_reactive == true ]] && wait_for_audio_frame
-    effect_arg=$effect
-    [[ $effect == random ]] && effect_arg=""
-    # ttfx's global rendering options must precede the effect subcommand; the
-    # subcommand only accepts its own effect-specific flags after it.
-    if [[ -n $effect_arg ]]; then
-      ttfx -i "$RUN_TMP" --frame-rate 120 --canvas-width 0 --canvas-height 0 --reuse-canvas --anchor-canvas c --anchor-text c --no-eol --no-restore-cursor "$effect_arg"
-    else
-      ttfx -i "$RUN_TMP" --frame-rate 120 --canvas-width 0 --canvas-height 0 --reuse-canvas --anchor-canvas c --anchor-text c --random-effect --no-eol --no-restore-cursor
+    if [[ $rendered_once == false || $beat_reactive != true ]] || (( SECONDS - last_text_refresh >= 5 )); then
+      next_text=$(determine_text "$text_mode" "$custom_text")
+      [[ -n $next_text ]] || next_text=OMARCHYSS
+      if [[ $next_text != "$raw_text" || -z $raw_text ]]; then
+        raw_text=$next_text
+        render_text "$raw_text"
+      fi
+      rendered_once=true
+      last_text_refresh=$SECONDS
     fi
-    if [[ $beat_reactive == true ]] && ! have cava; then
-      sleep 1
+    if [[ $beat_reactive == true ]]; then
+      drain_audio_frames
+      effect_arg=${beat_effects[$effect_index]}
+      exec_ttfx_effect "$effect_arg" &
+      RUN_EFFECT_PID=$!
+      effect_interrupted=false
+      while kill -0 "$RUN_EFFECT_PID" 2>/dev/null; do
+        (( timeout == 0 || SECONDS - started < timeout )) || exit 0
+        if wait_for_beat_frame; then
+          kill "$RUN_EFFECT_PID" 2>/dev/null || true
+          wait "$RUN_EFFECT_PID" 2>/dev/null || true
+          effect_interrupted=true
+          if [[ $effect == random ]]; then
+            effect_index=$(( (effect_index + 1 + RANDOM % (${#beat_effects[@]} - 1)) % ${#beat_effects[@]} ))
+          else
+            effect_index=$(( (effect_index + 1) % ${#beat_effects[@]} ))
+          fi
+          break
+        else
+          detector_status=$?
+          if (( detector_status == 2 )); then
+            stop_beat_detector
+            beat_reactive=false
+            kill "$RUN_EFFECT_PID" 2>/dev/null || true
+            effect_interrupted=true
+            break
+          fi
+        fi
+      done
+      effect_status=0
+      wait "$RUN_EFFECT_PID" 2>/dev/null || effect_status=$?
+      RUN_EFFECT_PID=""
+      if [[ $effect_interrupted == false ]] && (( effect_status != 0 )); then
+        printf '%s\n' "OmarchySS: TTFX effect failed with status $effect_status." >&2
+        exit "$effect_status"
+      fi
+    else
+      effect_arg=$effect
+      [[ $effect == random ]] && effect_arg=""
+      run_ttfx_effect "$effect_arg"
     fi
   done
 }
 
 case "${1:-}" in
   start) shift; start "$@" ;;
+  restart) shift; restart "$@" ;;
   stop) stop ;;
   status) status ;;
   media) shift; media "${1:-}" ;;
   run) shift; run "$@" ;;
-  *) printf '%s\n' "Usage: omarchyss {start|stop|status|media}" >&2; exit 2 ;;
+  *) printf '%s\n' "Usage: omarchyss {start|restart|stop|status|media}" >&2; exit 2 ;;
 esac
