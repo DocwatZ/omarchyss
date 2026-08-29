@@ -45,12 +45,84 @@ media() {
 
 figlet_available() { have figlet; }
 
+# Resolves the text that should currently be shown, for the given text mode.
+# Shared by start() (to size the window before it opens) and run() (on every
+# refresh of the loop, since the Spotify track can change mid-screensaver).
+determine_text() {
+  local text_mode=$1 custom_text=$2
+  case "$text_mode" in
+    track)
+      if spotify_available; then
+        playerctl --player=spotify metadata --format '{{artist}}
+{{title}}'
+      else
+        printf 'OMARCHYSS'
+      fi
+      ;;
+    branding) [[ -f $BRANDING_FILE ]] && cat "$BRANDING_FILE" || printf 'OMARCHYSS' ;;
+    custom) printf '%s' "$custom_text" ;;
+  esac
+}
+
+# Truncates $1 (a single line of plain text, with a trailing "…" once
+# shortened) until its own FIGlet rendering is no wider than $3 columns using
+# font $2. Used instead of FIGlet's built-in -w wrapping, which breaks a
+# single word across multiple stacked lines rather than shrinking it.
+fit_line() {
+  local line=$1 font=$2 cols=$3 width shortened
+  while [[ -n $line ]]; do
+    width=$(printf '%s\n' "$line" | figlet -f "$font" -w 2000 2>/dev/null | awk '{ print length }' | sort -n | tail -1)
+    (( ${width:-0} <= cols )) && { printf '%s' "$line"; return; }
+    shortened=${line:0:${#line}-2}
+    if [[ -n $shortened ]]; then
+      line="${shortened}…"
+    else
+      line=""
+    fi
+  done
+  printf '%s' "$1"
+}
+
+# Renders $1 (raw text, possibly multi-line -- e.g. artist + title) as FIGlet
+# art using font $2, first shrinking each source line so it fits within $3
+# columns, then dropping trailing lines so the total stacked height fits
+# within $4 rows. This guarantees the art always fits centered inside
+# whatever size window it happens to be shown in, instead of FIGlet's default
+# per-character line-wrapping (which looks broken for single words).
+fit_and_render() {
+  local raw=$1 font=$2 cols=$3 lines=$4
+  local -a src_lines fitted
+  mapfile -t src_lines <<< "$raw"
+  local per_line_height
+  per_line_height=$(figlet -f "$font" -w 2000 "A" 2>/dev/null | wc -l)
+  (( per_line_height < 1 )) && per_line_height=1
+  while (( ${#src_lines[@]} > 1 )) && (( ${#src_lines[@]} * per_line_height > lines )); do
+    src_lines=("${src_lines[@]:0:${#src_lines[@]}-1}")
+  done
+  local i
+  for i in "${!src_lines[@]}"; do
+    fitted[i]=$(fit_line "${src_lines[$i]}" "$font" "$cols")
+  done
+  printf '%s\n' "${fitted[@]}" | figlet -f "$font" -w 2000 2>/dev/null
+}
+
 render_text() {
-  # Renders $1 (raw text, possibly multi-line) into $tmp, using FIGlet when
-  # requested and available, otherwise writing the plain text unchanged.
+  # Renders $1 (raw text, possibly multi-line) into $RUN_TMP, using FIGlet
+  # when requested and available, otherwise writing the plain text unchanged.
+  # ttfx auto-sizes its canvas to the real terminal and centers via
+  # --anchor-canvas c --anchor-text c, so fitting the content here (rather
+  # than letting FIGlet wrap it) is what keeps it centered and unclipped.
   local raw=$1
   if [[ $USE_FIGLET == true ]] && [[ -n $FIGLET_FONT_PATH ]] && [[ -f $FIGLET_FONT_PATH ]] && figlet_available; then
-    printf '%s\n' "$raw" | figlet -f "$FIGLET_FONT_PATH" -w 400 > "$RUN_TMP" || printf '%s\n' "$raw" > "$RUN_TMP"
+    local cols lines rendered
+    cols=$(tput cols 2>/dev/null || echo 80); cols=$(( cols > 4 ? cols - 2 : cols ))
+    lines=$(tput lines 2>/dev/null || echo 24); lines=$(( lines > 2 ? lines - 2 : lines ))
+    rendered=$(fit_and_render "$raw" "$FIGLET_FONT_PATH" "$cols" "$lines")
+    if [[ -n $rendered ]]; then
+      printf '%s\n' "$rendered" > "$RUN_TMP"
+    else
+      printf '%s\n' "$raw" > "$RUN_TMP"
+    fi
   else
     printf '%s\n' "$raw" > "$RUN_TMP"
   fi
@@ -107,13 +179,22 @@ start() {
   fi
   local self
   self=$(readlink -f "$0")
+  # The window's actual pixel size is controlled by a Hyprland window rule
+  # (io.github.docwatz.omarchyss floated at a fixed share of the monitor) --
+  # Hyprland ignores a floating terminal's own requested column/row size and
+  # falls back to an 800x600 default otherwise, so requesting dimensions here
+  # would do nothing. render_text() fits/truncates the FIGlet art to whatever
+  # size the window rule gives it, using the real terminal size at render
+  # time (tput cols/lines).
   if have alacritty; then
-    alacritty --class "$APP_CLASS,$APP_CLASS" --title "OmarchySS" --option "font.size=$font_size" -e bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" &
+    alacritty --class "$APP_CLASS,$APP_CLASS" --title "OmarchySS" --option "font.size=$font_size" \
+      -e bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" &
   elif have foot; then
     # foot has no standalone font-size key; override the whole font list with a
     # generic monospace fallback at the requested size. This may not match the
     # user's usual terminal font family when Alacritty is unavailable.
-    foot --app-id="$APP_CLASS" --title="OmarchySS" --override="font=monospace:size=$font_size" bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" &
+    foot --app-id="$APP_CLASS" --title="OmarchySS" --override="font=monospace:size=$font_size" \
+      bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" &
   else
     printf '%s\n' "OmarchySS requires Alacritty or Foot." >&2
     stop
@@ -135,20 +216,26 @@ run() {
   RUN_TMP=$(mktemp "${STATE_DIR}/text.XXXXXX")
   trap 'rm -f "${RUN_TMP:-}"; stop; exit' EXIT INT TERM HUP
   printf '\033]11;rgb:00/00/00\007'
+  # The terminal opens via a Hyprland window rule that resizes it (see
+  # hyprland.md/plugins.md guidance); `tput cols`/`tput lines` can briefly
+  # report the pre-resize size until the compositor applies it. Wait for two
+  # consecutive matching readings (or a short timeout) before the first
+  # render so text isn't fitted/truncated against a stale, smaller size.
+  local settle_cols="" settle_lines="" new_cols new_lines settle_tries=0
+  while (( settle_tries < 20 )); do
+    new_cols=$(tput cols 2>/dev/null || echo 80)
+    new_lines=$(tput lines 2>/dev/null || echo 24)
+    if [[ $new_cols == "$settle_cols" && $new_lines == "$settle_lines" ]]; then
+      break
+    fi
+    settle_cols=$new_cols
+    settle_lines=$new_lines
+    settle_tries=$((settle_tries + 1))
+    sleep 0.1
+  done
   while :; do
     (( timeout == 0 || SECONDS - started < timeout )) || exit 0
-    case "$text_mode" in
-      track)
-        if spotify_available; then
-          raw_text=$(playerctl --player=spotify metadata --format '{{artist}}
-{{title}}')
-        else
-          raw_text="OMARCHYSS"
-        fi
-        ;;
-      branding) raw_text=$([[ -f $BRANDING_FILE ]] && cat "$BRANDING_FILE" || printf 'OMARCHYSS') ;;
-      custom) raw_text=$custom_text ;;
-    esac
+    raw_text=$(determine_text "$text_mode" "$custom_text")
     render_text "$raw_text"
     [[ $beat_reactive == true ]] && wait_for_audio_frame
     effect_arg=$effect
