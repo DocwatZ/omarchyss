@@ -22,7 +22,9 @@ BarWidget {
                 "--pause-spotify", setting("pauseSpotify", true) ? "true" : "false",
                 "--timeout", String(setting("autoCloseSeconds", 0)),
                 "--beat-reactive", setting("beatReactive", false) ? "true" : "false",
-                "--font-size", String(setting("fontSize", 28))]
+                "--font-size", String(setting("fontSize", 28)),
+                "--use-figlet", setting("useFiglet", false) ? "true" : "false",
+                "--figlet-font", String(setting("figletFontPath", ""))]
     Quickshell.execDetached(args)
     Qt.callLater(refresh)
   }

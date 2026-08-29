@@ -43,6 +43,19 @@ media() {
   esac
 }
 
+figlet_available() { have figlet; }
+
+render_text() {
+  # Renders $1 (raw text, possibly multi-line) into $tmp, using FIGlet when
+  # requested and available, otherwise writing the plain text unchanged.
+  local raw=$1
+  if [[ $USE_FIGLET == true ]] && [[ -n $FIGLET_FONT_PATH ]] && [[ -f $FIGLET_FONT_PATH ]] && figlet_available; then
+    printf '%s\n' "$raw" | figlet -f "$FIGLET_FONT_PATH" -w 400 > "$RUN_TMP" || printf '%s\n' "$raw" > "$RUN_TMP"
+  else
+    printf '%s\n' "$raw" > "$RUN_TMP"
+  fi
+}
+
 wait_for_audio_frame() {
   have cava || return 0
   local config fifo cava_pid frame
@@ -69,14 +82,15 @@ EOF
 
 start() {
   local effect=random text_mode=track custom_text="" pause_spotify=true timeout=0 beat_reactive=false font_size=28
+  local use_figlet=false figlet_font=""
   while (($#)); do
     case "$1" in
-      --effect|--text-mode|--custom-text|--pause-spotify|--timeout|--beat-reactive|--font-size)
+      --effect|--text-mode|--custom-text|--pause-spotify|--timeout|--beat-reactive|--font-size|--use-figlet|--figlet-font)
         [[ $# -ge 2 ]] || exit 2
         case "$1" in
           --effect) effect=$2 ;; --text-mode) text_mode=$2 ;; --custom-text) custom_text=$2 ;;
           --pause-spotify) pause_spotify=$2 ;; --timeout) timeout=$2 ;; --beat-reactive) beat_reactive=$2 ;;
-          --font-size) font_size=$2 ;;
+          --font-size) font_size=$2 ;; --use-figlet) use_figlet=$2 ;; --figlet-font) figlet_font=$2 ;;
         esac
         shift 2 ;;
       *) exit 2 ;;
@@ -91,9 +105,12 @@ start() {
   local self
   self=$(readlink -f "$0")
   if have alacritty; then
-    alacritty --class "$APP_CLASS,$APP_CLASS" --title "OmarchySS" --option "font.size=$font_size" -e bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" &
+    alacritty --class "$APP_CLASS,$APP_CLASS" --title "OmarchySS" --option "font.size=$font_size" -e bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" &
   elif have foot; then
-    foot --app-id="$APP_CLASS" --title="OmarchySS" --override="font-size=$font_size" bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" &
+    # foot has no standalone font-size key; override the whole font list with a
+    # generic monospace fallback at the requested size. This may not match the
+    # user's usual terminal font family when Alacritty is unavailable.
+    foot --app-id="$APP_CLASS" --title="OmarchySS" --override="font=monospace:size=$font_size" bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" &
   else
     printf '%s\n' "OmarchySS requires Alacritty or Foot." >&2
     stop
@@ -101,26 +118,44 @@ start() {
   fi
 }
 
+# Populated by run() before the EXIT trap is registered. It is intentionally a
+# global (not a function-local) so the trap can still clean it up after
+# `set -e` unwinds the whole script on a failing command -- traps run in the
+# top-level scope, where function-local variables are no longer visible.
+RUN_TMP=""
+
 run() {
-  local effect=$1 text_mode=$2 custom_text=$3 timeout=$4 beat_reactive=$5 started=$SECONDS input effect_arg
-  local tmp
-  tmp=$(mktemp "${STATE_DIR}/text.XXXXXX")
-  trap 'rm -f "$tmp"; stop; exit' EXIT INT TERM HUP
+  local effect=$1 text_mode=$2 custom_text=$3 timeout=$4 beat_reactive=$5
+  USE_FIGLET=${6:-false}
+  FIGLET_FONT_PATH=${7:-}
+  local started=$SECONDS effect_arg raw_text
+  RUN_TMP=$(mktemp "${STATE_DIR}/text.XXXXXX")
+  trap 'rm -f "${RUN_TMP:-}"; stop; exit' EXIT INT TERM HUP
   printf '\033]11;rgb:00/00/00\007'
   while :; do
     (( timeout == 0 || SECONDS - started < timeout )) || exit 0
     case "$text_mode" in
-      track) spotify_available && playerctl --player=spotify metadata --format '{{artist}}\n{{title}}' > "$tmp" || printf 'OMARCHYSS\n' > "$tmp" ;;
-      branding) [[ -f $BRANDING_FILE ]] && cp "$BRANDING_FILE" "$tmp" || printf 'OMARCHYSS\n' > "$tmp" ;;
-      custom) printf '%s\n' "$custom_text" > "$tmp" ;;
+      track)
+        if spotify_available; then
+          raw_text=$(playerctl --player=spotify metadata --format '{{artist}}
+{{title}}')
+        else
+          raw_text="OMARCHYSS"
+        fi
+        ;;
+      branding) raw_text=$([[ -f $BRANDING_FILE ]] && cat "$BRANDING_FILE" || printf 'OMARCHYSS') ;;
+      custom) raw_text=$custom_text ;;
     esac
+    render_text "$raw_text"
     [[ $beat_reactive == true ]] && wait_for_audio_frame
     effect_arg=$effect
     [[ $effect == random ]] && effect_arg=""
+    # ttfx's global rendering options must precede the effect subcommand; the
+    # subcommand only accepts its own effect-specific flags after it.
     if [[ -n $effect_arg ]]; then
-      ttfx -i "$tmp" "$effect_arg" --frame-rate 120 --canvas-width 0 --canvas-height 0 --reuse-canvas --anchor-canvas c --anchor-text c --no-eol --no-restore-cursor
+      ttfx -i "$RUN_TMP" --frame-rate 120 --canvas-width 0 --canvas-height 0 --reuse-canvas --anchor-canvas c --anchor-text c --no-eol --no-restore-cursor "$effect_arg"
     else
-      ttfx -i "$tmp" --frame-rate 120 --canvas-width 0 --canvas-height 0 --reuse-canvas --anchor-canvas c --anchor-text c --random-effect --no-eol --no-restore-cursor
+      ttfx -i "$RUN_TMP" --frame-rate 120 --canvas-width 0 --canvas-height 0 --reuse-canvas --anchor-canvas c --anchor-text c --random-effect --no-eol --no-restore-cursor
     fi
     if [[ $beat_reactive == true ]] && ! have cava; then
       sleep 1
