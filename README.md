@@ -5,6 +5,17 @@ dedicated terminal screensaver. It uses TTFX animations, can render the
 current Spotify artist and title, and supplies Spotify controls directly from
 the bar.
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/omarchyss-branding.png" width="49%" alt="OmarchySS animated branding">
+  <img src="docs/screenshots/spotify-track-screensaver.png" width="49%" alt="Beat-reactive Spotify track screensaver">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/spotify-controls.png" width="380" alt="Spotify player, device selector, and screensaver controls">
+</p>
+
 ## Features
 
 - Left-click to start or stop a dedicated Alacritty or Foot screensaver window.
