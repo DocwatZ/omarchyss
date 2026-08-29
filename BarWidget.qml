@@ -113,6 +113,17 @@ BarWidget {
     Quickshell.execDetached(["python3", root.spotifyHelperPath, "auth"])
   }
 
+  function saveClientIdAndLogin(clientId) {
+    clientId = clientId.trim()
+    if (!clientId) return
+    // setup writes the Client ID synchronously, then auth (detached) opens
+    // the browser -- run them back to back so one click on "Save & Connect"
+    // does the whole one-time setup.
+    setupProcess.command = ["python3", root.spotifyHelperPath, "setup", clientId]
+    setupProcess.running = false
+    setupProcess.running = true
+  }
+
   function ingest(line) {
     try {
       var status = JSON.parse(String(line))
@@ -194,6 +205,23 @@ BarWidget {
           root.searchResults = []
           root.searchError = "Search failed. Are you logged in to Spotify? (right-click \u2192 Connect Spotify)"
         }
+      }
+    }
+  }
+
+  // Writes the Client ID (setup) then opens the browser login (auth) as one
+  // click from the popup -- setup exits quickly so onExited chains straight
+  // into the detached, longer-lived auth process.
+  Process {
+    id: setupProcess
+    running: false
+    onExited: function(exitCode) {
+      root.refreshSpotifyAuthStatus()
+      if (exitCode === 0) {
+        root.startSpotifyLogin()
+        spotifyRecheck.start()
+      } else {
+        root.searchError = "Could not save Client ID. Check it's correct and try again."
       }
     }
   }
@@ -425,22 +453,57 @@ BarWidget {
         }
 
         Text {
-          visible: !root.spotifyLoggedIn
+          visible: !root.spotifyLoggedIn && root.spotifyConfigured
           width: parent.width
           wrapMode: Text.WordWrap
           color: Qt.darker(root.bar.foreground, 1.3)
           font.pixelSize: Style.font.caption
-          text: root.spotifyConfigured
-            ? "Not connected. Click to log in to Spotify."
-            : "Spotify search needs a one-time setup. See the OmarchySS README, then click to log in."
+          text: "Not connected. Click to log in to Spotify."
         }
         BarIconButton {
-          visible: !root.spotifyLoggedIn
+          visible: !root.spotifyLoggedIn && root.spotifyConfigured
           width: Style.space(28); height: Style.space(28)
           bar: root.bar
           text: "󰀄"
           tooltipText: "Connect Spotify"
           onPressed: { root.startSpotifyLogin(); Qt.callLater(function() { spotifyRecheck.start() }) }
+        }
+
+        // One-time setup: paste a Spotify app Client ID (from
+        // developer.spotify.com/dashboard, redirect URI
+        // http://127.0.0.1:8945/callback) and this saves it, then opens the
+        // browser login in one step. Only shown until setup is done.
+        Column {
+          width: parent.width
+          spacing: Style.space(4)
+          visible: !root.spotifyConfigured
+
+          Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            color: Qt.darker(root.bar.foreground, 1.3)
+            font.pixelSize: Style.font.caption
+            text: "One-time setup: paste your Spotify app's Client ID (redirect URI must be http://127.0.0.1:8945/callback)."
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+
+            TextField {
+              id: clientIdField
+              width: parent.width - Style.space(60)
+              placeholderText: "Spotify Client ID"
+              onAccepted: root.saveClientIdAndLogin(text)
+            }
+            BarIconButton {
+              width: Style.space(28); height: Style.space(28)
+              bar: root.bar
+              text: "󰄬"
+              tooltipText: "Save & connect"
+              onPressed: root.saveClientIdAndLogin(clientIdField.text)
+            }
+          }
         }
 
         Text {
