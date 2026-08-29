@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.docwatz.omarchyss",
+  "name": "OmarchySS",
+  "version": "0.1.0",
+  "author": "DocwatZ",
+  "license": "MIT",
+  "homepage": "https://github.com/DocwatZ/omarchyss",
+  "description": "A Spotify-aware terminal screensaver with configurable TTFX effects.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "OmarchySS",
+    "description": "Launch a configurable terminal screensaver with Spotify controls.",
+    "category": "Utilities",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "effect": "random",
+      "textMode": "track",
+      "customText": "",
+      "pauseSpotify": true,
+      "autoCloseSeconds": 0,
+      "beatReactive": false
+    },
+    "schema": [
+      { "key": "effect", "type": "enum", "label": "TTFX effect", "options": ["random", "beams", "bubbles", "fireworks", "matrix", "rain", "rings", "spotlights", "thunderstorm", "waves"], "defaultValue": "random" },
+      { "key": "textMode", "type": "enum", "label": "Screensaver text", "options": ["track", "branding", "custom"], "defaultValue": "track", "description": "Track shows the current Spotify artist and title." },
+      { "key": "customText", "type": "string", "label": "Custom text", "defaultValue": "", "description": "Used when Screensaver text is Custom." },
+      { "key": "pauseSpotify", "type": "boolean", "label": "Pause Spotify while active", "defaultValue": true },
+      { "key": "autoCloseSeconds", "type": "integer", "label": "Auto-close after seconds", "min": 0, "max": 14400, "step": 60, "defaultValue": 0, "description": "Set to 0 to keep the screensaver open until stopped." },
+      { "key": "beatReactive", "type": "boolean", "label": "Beat-reactive effects", "defaultValue": false, "description": "Use Cava audio peaks to advance TTFX effects. Requires cava." }
+    ]
+  }
+}
