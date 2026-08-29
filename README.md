@@ -112,6 +112,23 @@ not need to be open. Playback requires Spotify Premium.
 
 Nothing is sent anywhere except Spotify's own API.
 
+## Uninstall
+
+Disconnect Spotify first if you completed the optional setup, then remove the
+plugin:
+
+```bash
+PLUGIN_DIR=~/.config/omarchy/plugins/io.github.docwatz.omarchyss
+python3 "$PLUGIN_DIR/bin/omarchyss-spotify" logout
+omarchy plugin remove io.github.docwatz.omarchyss
+```
+
+To also remove OmarchySS preferences and its local Spotify playback cache:
+
+```bash
+rm -rf ~/.config/omarchyss ~/.local/state/omarchyss
+```
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
