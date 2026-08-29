@@ -35,7 +35,7 @@
       { "key": "pauseSpotify", "type": "boolean", "label": "Pause Spotify while active", "defaultValue": true },
       { "key": "autoCloseSeconds", "type": "integer", "label": "Auto-close after seconds", "min": 0, "max": 14400, "step": 60, "defaultValue": 0, "description": "Set to 0 to keep the screensaver open until stopped." },
       { "key": "beatReactive", "type": "boolean", "label": "Beat-reactive effects", "defaultValue": false, "description": "Use Cava audio peaks to advance TTFX effects. Requires cava." },
-      { "key": "fontSize", "type": "integer", "label": "Terminal font size", "min": 12, "max": 72, "step": 1, "defaultValue": 28, "description": "Increase this if the screensaver text is too small." },
+      { "key": "fontSize", "type": "integer", "label": "Terminal font size", "min": 6, "max": 72, "step": 1, "defaultValue": 28, "description": "Increase this if the screensaver text is too small." },
       { "key": "useFiglet", "type": "boolean", "label": "Render text as FIGlet art", "defaultValue": false, "description": "Turns the screensaver text into large ASCII/Unicode block art before animating it. Requires figlet and a local .flf font file." },
       { "key": "figletFontPath", "type": "string", "label": "FIGlet font file (.flf)", "defaultValue": "", "description": "Absolute path to a local FIGlet font, e.g. ~/.local/share/omarchyss/fonts/Delta Corps Priest 1.flf" }
     ]
