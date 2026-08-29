@@ -106,6 +106,73 @@ fit_and_render() {
   printf '%s\n' "${fitted[@]}" | figlet -f "$font" -w 2000 2>/dev/null
 }
 
+# Reads the terminal's current column/row count, waiting for two
+# consecutive matching readings (or a short timeout) before returning. A
+# resize -- whether from the compositor's window rule, the user dragging an
+# edge, or our own `alacritty msg config` font-size change below -- can take
+# a moment to land, so `tput cols`/`tput lines` may briefly report a stale
+# size immediately after one of those events.
+read_settled_size() {
+  local settle_cols="" settle_lines="" new_cols new_lines tries=0
+  while (( tries < 20 )); do
+    new_cols=$(tput cols 2>/dev/null || echo 80)
+    new_lines=$(tput lines 2>/dev/null || echo 24)
+    if [[ $new_cols == "$settle_cols" && $new_lines == "$settle_lines" ]]; then
+      break
+    fi
+    settle_cols=$new_cols
+    settle_lines=$new_lines
+    tries=$((tries + 1))
+    sleep 0.05
+  done
+  printf '%s %s' "$settle_cols" "$settle_lines"
+}
+
+# Picks the largest Alacritty font size (up to $3, the user-configured
+# maximum) that lets $1's full FIGlet rendering (using font $2) fit within
+# the terminal's *current pixel-size* window, live-applies it via
+# `alacritty msg config`, and prints the resulting "COLS LINES" once it has
+# taken effect. This is what makes the on-screen text scale to whatever size
+# window the screensaver happens to be running in -- shrinking further for a
+# small window, growing back up to the configured max for a large one --
+# instead of a fixed font size that's either too big (clipped/truncated) or
+# too small (tiny text in a big window) for the window it lands in.
+#
+# Foot has no equivalent runtime IPC for changing font size, so on foot this
+# is a no-op that just reports the current (fixed-font-size) terminal size;
+# fit_and_render()'s own text-truncation fallback is what keeps foot's
+# output from overflowing in that case.
+fit_font_size_to_window() {
+  local raw=$1 font=$2 max_size=$3
+  if [[ -z ${ALACRITTY_WINDOW_ID:-} ]] || ! have alacritty; then
+    read_settled_size
+    return
+  fi
+
+  local measure_size=16 cols_m lines_m nat_cols nat_lines size size_h margin=90
+  alacritty msg config -w "$ALACRITTY_WINDOW_ID" "font.size=$measure_size" >/dev/null 2>&1 || true
+  read -r cols_m lines_m <<< "$(read_settled_size)"
+
+  nat_cols=$(printf '%s\n' "$raw" | figlet -f "$font" -w 2000 2>/dev/null | awk '{ print length }' | sort -n | tail -1)
+  nat_lines=$(printf '%s\n' "$raw" | figlet -f "$font" -w 2000 2>/dev/null | wc -l)
+  (( ${nat_cols:-0} < 1 )) && nat_cols=1
+  (( ${nat_lines:-0} < 1 )) && nat_lines=1
+
+  # cell size scales ~linearly with font point size, so the number of columns
+  # a given pixel-width window can show at size S is roughly
+  # cols_m * measure_size / S -- solve for the largest S where that's still
+  # >= the FIGlet art's natural width (and same for rows/height), with a 10%
+  # margin so the art isn't flush against the window edges.
+  size=$(( cols_m * measure_size * margin / 100 / nat_cols ))
+  size_h=$(( lines_m * measure_size * margin / 100 / nat_lines ))
+  (( size_h < size )) && size=$size_h
+  (( size > max_size )) && size=$max_size
+  (( size < 6 )) && size=6
+
+  alacritty msg config -w "$ALACRITTY_WINDOW_ID" "font.size=$size" >/dev/null 2>&1 || true
+  read_settled_size
+}
+
 render_text() {
   # Renders $1 (raw text, possibly multi-line) into $RUN_TMP, using FIGlet
   # when requested and available, otherwise writing the plain text unchanged.
@@ -115,8 +182,9 @@ render_text() {
   local raw=$1
   if [[ $USE_FIGLET == true ]] && [[ -n $FIGLET_FONT_PATH ]] && [[ -f $FIGLET_FONT_PATH ]] && figlet_available; then
     local cols lines rendered
-    cols=$(tput cols 2>/dev/null || echo 80); cols=$(( cols > 4 ? cols - 2 : cols ))
-    lines=$(tput lines 2>/dev/null || echo 24); lines=$(( lines > 2 ? lines - 2 : lines ))
+    read -r cols lines <<< "$(fit_font_size_to_window "$raw" "$FIGLET_FONT_PATH" "$FONT_SIZE_MAX")"
+    cols=$(( cols > 4 ? cols - 2 : cols ))
+    lines=$(( lines > 2 ? lines - 2 : lines ))
     rendered=$(fit_and_render "$raw" "$FIGLET_FONT_PATH" "$cols" "$lines")
     if [[ -n $rendered ]]; then
       printf '%s\n' "$rendered" > "$RUN_TMP"
@@ -179,22 +247,21 @@ start() {
   fi
   local self
   self=$(readlink -f "$0")
-  # The window's actual pixel size is controlled by a Hyprland window rule
-  # (io.github.docwatz.omarchyss floated at a fixed share of the monitor) --
-  # Hyprland ignores a floating terminal's own requested column/row size and
-  # falls back to an 800x600 default otherwise, so requesting dimensions here
-  # would do nothing. render_text() fits/truncates the FIGlet art to whatever
-  # size the window rule gives it, using the real terminal size at render
-  # time (tput cols/lines).
+  # `font_size` here is just the initial/preferred value: run()'s render
+  # loop (via fit_font_size_to_window) live-adjusts Alacritty's actual font
+  # size every refresh so the FIGlet text always scales to fit whatever
+  # window it's shown in -- a companion Hyprland window rule floats this
+  # window (see the plugin README) but no longer needs to fix its size,
+  # since the text now adapts to the window instead of the other way round.
   if have alacritty; then
     alacritty --class "$APP_CLASS,$APP_CLASS" --title "OmarchySS" --option "font.size=$font_size" \
-      -e bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" &
+      -e bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" "$font_size" &
   elif have foot; then
     # foot has no standalone font-size key; override the whole font list with a
     # generic monospace fallback at the requested size. This may not match the
     # user's usual terminal font family when Alacritty is unavailable.
     foot --app-id="$APP_CLASS" --title="OmarchySS" --override="font=monospace:size=$font_size" \
-      bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" &
+      bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" "$font_size" &
   else
     printf '%s\n' "OmarchySS requires Alacritty or Foot." >&2
     stop
@@ -212,27 +279,16 @@ run() {
   local effect=$1 text_mode=$2 custom_text=$3 timeout=$4 beat_reactive=$5
   USE_FIGLET=${6:-false}
   FIGLET_FONT_PATH=${7:-}
+  FONT_SIZE_MAX=${8:-28}
   local started=$SECONDS effect_arg raw_text
   RUN_TMP=$(mktemp "${STATE_DIR}/text.XXXXXX")
   trap 'rm -f "${RUN_TMP:-}"; stop; exit' EXIT INT TERM HUP
   printf '\033]11;rgb:00/00/00\007'
-  # The terminal opens via a Hyprland window rule that resizes it (see
-  # hyprland.md/plugins.md guidance); `tput cols`/`tput lines` can briefly
-  # report the pre-resize size until the compositor applies it. Wait for two
-  # consecutive matching readings (or a short timeout) before the first
-  # render so text isn't fitted/truncated against a stale, smaller size.
-  local settle_cols="" settle_lines="" new_cols new_lines settle_tries=0
-  while (( settle_tries < 20 )); do
-    new_cols=$(tput cols 2>/dev/null || echo 80)
-    new_lines=$(tput lines 2>/dev/null || echo 24)
-    if [[ $new_cols == "$settle_cols" && $new_lines == "$settle_lines" ]]; then
-      break
-    fi
-    settle_cols=$new_cols
-    settle_lines=$new_lines
-    settle_tries=$((settle_tries + 1))
-    sleep 0.1
-  done
+  # The terminal's initial size (whether from the Hyprland window rule or
+  # Alacritty/foot's own defaults) can take a moment to land -- wait for it
+  # to settle before the first render_text/fit_font_size_to_window call so
+  # text isn't fitted against a stale, pre-resize size.
+  read_settled_size >/dev/null
   while :; do
     (( timeout == 0 || SECONDS - started < timeout )) || exit 0
     raw_text=$(determine_text "$text_mode" "$custom_text")
