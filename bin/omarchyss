@@ -68,21 +68,22 @@ EOF
 }
 
 start() {
-  local effect=random text_mode=track custom_text="" pause_spotify=true timeout=0 beat_reactive=false
+  local effect=random text_mode=track custom_text="" pause_spotify=true timeout=0 beat_reactive=false font_size=28
   while (($#)); do
     case "$1" in
-      --effect|--text-mode|--custom-text|--pause-spotify|--timeout|--beat-reactive)
+      --effect|--text-mode|--custom-text|--pause-spotify|--timeout|--beat-reactive|--font-size)
         [[ $# -ge 2 ]] || exit 2
         case "$1" in
           --effect) effect=$2 ;; --text-mode) text_mode=$2 ;; --custom-text) custom_text=$2 ;;
           --pause-spotify) pause_spotify=$2 ;; --timeout) timeout=$2 ;; --beat-reactive) beat_reactive=$2 ;;
+          --font-size) font_size=$2 ;;
         esac
         shift 2 ;;
       *) exit 2 ;;
     esac
   done
   [[ $effect =~ ^(random|beams|bubbles|fireworks|matrix|rain|rings|spotlights|thunderstorm|waves)$ ]] || exit 2
-  [[ $text_mode =~ ^(track|branding|custom)$ && $timeout =~ ^[0-9]+$ ]] || exit 2
+  [[ $text_mode =~ ^(track|branding|custom)$ && $timeout =~ ^[0-9]+$ && $font_size =~ ^[0-9]+$ && $font_size -ge 12 && $font_size -le 72 ]] || exit 2
   if [[ $(status | jq -r .running) == true ]]; then stop; return; fi
   if [[ $pause_spotify == true ]] && spotify_available && [[ $(playerctl --player=spotify status) == Playing ]]; then
     : > "$STATE_FILE"; playerctl --player=spotify pause
@@ -90,9 +91,9 @@ start() {
   local self
   self=$(readlink -f "$0")
   if have alacritty; then
-    alacritty --class "$APP_CLASS,$APP_CLASS" --title "OmarchySS" -e bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" &
+    alacritty --class "$APP_CLASS,$APP_CLASS" --title "OmarchySS" --option "font.size=$font_size" -e bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" &
   elif have foot; then
-    foot --app-id="$APP_CLASS" --title="OmarchySS" bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" &
+    foot --app-id="$APP_CLASS" --title="OmarchySS" --override="font-size=$font_size" bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" &
   else
     printf '%s\n' "OmarchySS requires Alacritty or Foot." >&2
     stop

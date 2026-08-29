@@ -21,7 +21,8 @@ BarWidget {
                 "--custom-text", String(setting("customText", "")),
                 "--pause-spotify", setting("pauseSpotify", true) ? "true" : "false",
                 "--timeout", String(setting("autoCloseSeconds", 0)),
-                "--beat-reactive", setting("beatReactive", false) ? "true" : "false"]
+                "--beat-reactive", setting("beatReactive", false) ? "true" : "false",
+                "--font-size", String(setting("fontSize", 28))]
     Quickshell.execDetached(args)
     Qt.callLater(refresh)
   }

@@ -14,6 +14,7 @@ the bar.
 - Right-click play/pause, middle-click next, and scroll for previous/next.
 - Optionally pause Spotify for the screensaver session and resume it on exit.
 - Optional auto-close timer.
+- Adjustable terminal font size (default: 28pt).
 - Beat-reactive animation cycling, using Cava's live PipeWire audio frames.
 - A registered Omarchy global action for binding a keyboard shortcut.
 
