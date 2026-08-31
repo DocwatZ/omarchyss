@@ -77,6 +77,9 @@ BarWidget {
     : (spotifyPlayer && spotifyPlayer.loopState === 2 ? "track"
        : (spotifyPlayer && spotifyPlayer.loopState === 1 ? "context" : "off"))
 
+  // Only ever binds to Spotify or spotifyd. Falling back to an arbitrary
+  // MPRIS player made the widget control whatever else was running (a
+  // browser playing YouTube, for example), which is not what this is for.
   function findSpotifyPlayer() {
     var playingPlayer = null
     var spotifydPlayer = null
@@ -93,7 +96,6 @@ BarWidget {
       }
     }
     return playingPlayer || spotifydPlayer || desktopPlayer
-      || (mprisPlayers.length > 0 ? mprisPlayers[0] : null)
   }
 
   function fmtTime(seconds) {
