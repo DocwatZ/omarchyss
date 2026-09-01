@@ -31,6 +31,9 @@ BarWidget {
   property string deviceError: ""
   property double lastSpotifyDeviceRefreshAt: 0
   property double lastRemotePlayerRefreshAt: 0
+  property double remotePlayerSyncPositionMs: 0
+  property double remotePlayerSyncedAt: 0
+  property int positionTick: 0
   property double spotifyRateLimitedUntil: 0
   property real pendingSeekFraction: -1
   property real pendingVolume: -1
@@ -67,7 +70,7 @@ BarWidget {
   readonly property string playerArtUrl: trustedSpotifyArtUrl(remotePlayerActive
     ? String(remotePlayer.image || "") : (spotifyPlayer ? String(spotifyPlayer.trackArtUrl || "") : ""))
   readonly property real playerPosition: remotePlayerActive
-    ? Number(remotePlayer.progressMs || 0) / 1000 : (spotifyPlayer ? spotifyPlayer.position : 0)
+    ? interpolatedRemotePosition() : (spotifyPlayer ? spotifyPlayer.position : 0)
   readonly property real playerLength: remotePlayerActive
     ? Number(remotePlayer.durationMs || 0) / 1000 : (spotifyPlayer ? spotifyPlayer.length : 0)
   readonly property real playerVolume: remotePlayerActive
@@ -140,6 +143,22 @@ BarWidget {
   function media(action) {
     Quickshell.execDetached(["bash", helperPath, "media", action])
     Qt.callLater(refresh)
+  }
+
+  // Web-API now-playing polling is throttled (to protect Spotify's quota),
+  // so remotePlayer.progressMs only refreshes every few seconds. Interpolate
+  // locally between polls -- based on wall-clock time elapsed since the
+  // last successful fetch -- so the progress bar/time still tick smoothly
+  // every second instead of visibly jumping. positionTick is read only to
+  // give this binding a reactive dependency on the 1s UI timer below.
+  function interpolatedRemotePosition() {
+    positionTick
+    var positionMs = remotePlayerSyncPositionMs
+    if (playerIsPlaying)
+      positionMs += Date.now() - remotePlayerSyncedAt
+    var lengthMs = Number(remotePlayer.durationMs || 0)
+    if (lengthMs > 0) positionMs = Math.min(positionMs, lengthMs)
+    return Math.max(0, positionMs) / 1000
   }
 
   // Direct MPRIS controls for the popup overlay. Reactive and instant --
@@ -415,13 +434,18 @@ BarWidget {
     onTriggered: root.refresh()
   }
 
-  // Advances the popup's progress bar smoothly between MPRIS position
-  // updates (which only arrive on track/seek changes, not every second).
+  // Advances the popup's progress bar smoothly between position updates
+  // (MPRIS only reports on track/seek changes; the Web API poll below is
+  // throttled to protect Spotify's quota). positionTick just needs to
+  // change every second to re-evaluate interpolatedRemotePosition()'s
+  // binding; the periodic refreshRemotePlayer() call resyncs it against
+  // the real server-reported position (and self-throttles internally).
   Timer {
-    interval: root.remotePlayerActive ? 2000 : 1000
+    interval: 1000
     running: root.popupOpen && root.hasPlayer
     repeat: true
     onTriggered: {
+      root.positionTick++
       if (root.remotePlayerActive) root.refreshRemotePlayer()
       else if (root.spotifyPlayer) root.spotifyPlayer.positionChanged()
     }
@@ -525,6 +549,8 @@ BarWidget {
       onStreamFinished: {
         try {
           root.remotePlayer = JSON.parse(text)
+          root.remotePlayerSyncPositionMs = Number(root.remotePlayer.progressMs || 0)
+          root.remotePlayerSyncedAt = Date.now()
         } catch (e) {
           root.remotePlayer = ({})
         }
