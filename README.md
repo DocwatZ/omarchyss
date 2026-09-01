@@ -2,7 +2,7 @@
 
 OmarchySS is an [Omarchy](https://omarchy.org/) bar plugin that launches a
 dedicated terminal screensaver. It uses TTFX animations, can render the
-current Spotify artist and title, and supplies Spotify controls directly from
+current Spotify artist and title, custom text and supplies Spotify controls directly from
 the bar.
 
 ## Screenshots
