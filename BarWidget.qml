@@ -288,9 +288,8 @@ BarWidget {
   }
 
   function spotifyCooldownNotice() {
-    return "Spotify paused remote control for this account. "
-      + "Playback controls still work; devices return in about "
-      + formatSpotifyCooldown() + "."
+    return "Spotify paused remote control for this account, so only the local "
+      + "OmarchySS device is available for about " + formatSpotifyCooldown() + "."
   }
 
   function noteSpotifyCooldown(seconds) {
@@ -312,8 +311,9 @@ BarWidget {
 
   function refreshSpotifyDevices(force) {
     if (!spotifyLoggedIn || devicesProcess.running) return
-    // `force` skips the polling throttle but must never skip the cooldown.
-    if (isSpotifyRateLimited()) return
+    // No cooldown guard here: the helper short-circuits blocked Web API calls
+    // itself and falls back to the local spotifyd device, so this stays useful
+    // while Spotify is rate limiting. `force` only skips the throttle.
     var now = Date.now()
     if (!force && now - lastSpotifyDeviceRefreshAt < 15000) return
     lastSpotifyDeviceRefreshAt = now
@@ -325,9 +325,8 @@ BarWidget {
 
   function refreshRemotePlayer(force) {
     if (!spotifyLoggedIn || nowPlayingProcess.running) return
-    if (isSpotifyRateLimited()) return
     var now = Date.now()
-    if (!force && now - lastRemotePlayerRefreshAt < 15000) return
+    if (!force && now - lastRemotePlayerRefreshAt < 5000) return
     lastRemotePlayerRefreshAt = now
     nowPlayingProcess.running = true
   }

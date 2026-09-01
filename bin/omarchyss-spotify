@@ -557,6 +557,152 @@ def find_omarchyss_device(config, wait_seconds=0):
         time.sleep(0.5)
 
 
+# spotifyd exposes its MPRIS interface under rs.spotifyd.instance<pid> rather
+# than the org.mpris.MediaPlayer2.* name generic MPRIS clients scan for, so it
+# has to be addressed explicitly. Going through D-Bus keeps the local device
+# usable while Spotify's Web API player endpoints are rate limited.
+MPRIS_PATH = "/org/mpris/MediaPlayer2"
+MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
+SPOTIFYD_CONTROLS_PATH = "/rs/spotifyd/Controls"
+SPOTIFYD_CONTROLS_IFACE = "rs.spotifyd.Controls"
+
+
+def spotifyd_bus_name():
+    pid = managed_spotifyd_pid()
+    preferred = f"rs.spotifyd.instance{pid}" if pid else None
+    try:
+        listing = subprocess.run(
+            ["busctl", "--user", "list", "--no-legend"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    names = [
+        line.split()[0]
+        for line in listing.splitlines()
+        if line.split() and line.split()[0].startswith("rs.spotifyd.instance")
+    ]
+    if preferred and preferred in names:
+        return preferred
+    return names[0] if names else None
+
+
+def busctl_call(name, path, iface, method, *args):
+    command = ["busctl", "--user", "call", name, path, iface, method]
+    command.extend(str(a) for a in args)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def busctl_get(name, prop, iface=MPRIS_PLAYER_IFACE, path=MPRIS_PATH):
+    try:
+        result = subprocess.run(
+            ["busctl", "--user", "--json=short", "get-property", name, path, iface, prop],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout).get("data")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
+def unwrap_variant(value):
+    """busctl --json=short wraps every value as {"type":..., "data":...}."""
+    if isinstance(value, dict) and set(value.keys()) == {"type", "data"}:
+        return unwrap_variant(value["data"])
+    if isinstance(value, dict):
+        return {k: unwrap_variant(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [unwrap_variant(v) for v in value]
+    return value
+
+
+def local_player_available():
+    return spotifyd_bus_name() is not None
+
+
+def local_activate(name=None):
+    """Make spotifyd the active Connect device without using the Web API."""
+    name = name or spotifyd_bus_name()
+    if not name:
+        return False
+    if busctl_get(name, "PlaybackStatus") is not None:
+        return True
+    if not busctl_call(name, SPOTIFYD_CONTROLS_PATH, SPOTIFYD_CONTROLS_IFACE, "TransferPlayback"):
+        return False
+    # The MPRIS object is only exported once the device becomes active.
+    for _ in range(24):
+        if busctl_get(name, "PlaybackStatus") is not None:
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def local_play(uri):
+    name = spotifyd_bus_name()
+    if not name or not local_activate(name):
+        return False
+    return busctl_call(name, MPRIS_PATH, MPRIS_PLAYER_IFACE, "OpenUri", "s", uri)
+
+
+LOCAL_CONTROL_METHODS = {
+    "play-pause": "PlayPause",
+    "play": "Play",
+    "pause": "Pause",
+    "next": "Next",
+    "previous": "Previous",
+}
+
+
+def local_control(action):
+    name = spotifyd_bus_name()
+    if not name or not local_activate(name):
+        return False
+    method = LOCAL_CONTROL_METHODS.get(action)
+    if method:
+        return busctl_call(name, MPRIS_PATH, MPRIS_PLAYER_IFACE, method)
+    return False
+
+
+def local_now_playing():
+    name = spotifyd_bus_name()
+    if not name:
+        return {}
+    status = busctl_get(name, "PlaybackStatus")
+    if status is None:
+        return {}
+    metadata = unwrap_variant(busctl_get(name, "Metadata")) or {}
+    artists = metadata.get("xesam:artist") or []
+    if isinstance(artists, str):
+        artists = [artists]
+    length_us = metadata.get("mpris:length") or 0
+    position_us = busctl_get(name, "Position") or 0
+    volume = busctl_get(name, "Volume")
+    title = metadata.get("xesam:title", "")
+    return {
+        "active": True,
+        "isPlaying": status == "Playing",
+        "title": title,
+        "artists": ", ".join(a for a in artists if a),
+        "album": metadata.get("xesam:album", ""),
+        "image": metadata.get("mpris:artUrl", ""),
+        "progressMs": int(position_us) // 1000,
+        "durationMs": int(length_us) // 1000,
+        "volumePercent": int(round(volume * 100)) if isinstance(volume, (int, float)) else None,
+        "shuffle": busctl_get(name, "Shuffle") is True,
+        "repeatState": "off",
+        "local": True,
+        "device": {"id": "", "name": DEVICE_NAME, "type": "computer"},
+    }
+
+
 def cmd_status(_args):
     config = load_config()
     print(json.dumps({
@@ -597,6 +743,16 @@ def cmd_search(args):
 
 def cmd_devices(_args):
     config = load_config()
+    if player_cooldown_remaining() > 0 and local_player_available():
+        # Surface the local device so playback stays selectable while the Web
+        # API player endpoints are blocked.
+        print(json.dumps([{
+            "id": "",
+            "name": f"{DEVICE_NAME} (local)",
+            "type": "Computer",
+            "is_active": busctl_get(spotifyd_bus_name(), "PlaybackStatus") is not None,
+        }]))
+        return
     status, payload = api_request(config, "/me/player/devices")
     if status != 200:
         die(f"omarchyss-spotify: devices failed ({status}): {payload.get('error', payload)}{retry_suffix(payload)}")
@@ -657,6 +813,9 @@ def current_playback(config):
 
 
 def cmd_now_playing(_args):
+    if player_cooldown_remaining() > 0:
+        print(json.dumps(local_now_playing()))
+        return
     print(json.dumps(current_playback(load_config())))
 
 
@@ -664,6 +823,12 @@ def cmd_control(args):
     if not args:
         die("Usage: omarchyss-spotify control {play-pause|play|pause|next|previous|seek|volume|shuffle|repeat}", 2)
     action = args[0]
+    if player_cooldown_remaining() > 0:
+        # Transport control still works over D-Bus while the Web API is
+        # blocked; only the richer actions genuinely need the Web API.
+        if local_control(action):
+            return
+        die(f"omarchyss-spotify: control failed (429): Spotify paused remote control.{retry_suffix({'retryAfter': player_cooldown_remaining()})}")
     config = load_config()
     method = "PUT"
     path = ""
@@ -744,7 +909,12 @@ def cmd_play(args):
     config = load_config()
     status, payload = api_request(config, "/me/player/devices")
     if status == 429:
-        # Starting spotifyd and polling for it would just burn the cooldown.
+        # Web API playback is blocked; drive the local spotifyd device over
+        # D-Bus instead of starting spotifyd and polling for a device we
+        # cannot reach.
+        start_spotifyd()
+        if local_play(uri):
+            return
         die(f"omarchyss-spotify: play failed (429): {payload.get('error', payload)}{retry_suffix(payload)}")
     devices = payload.get("devices", []) if status == 200 else []
     requested_device_id = args[1] if len(args) > 1 else ""
