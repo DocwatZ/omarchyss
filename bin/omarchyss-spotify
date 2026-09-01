@@ -8,7 +8,7 @@ screensaver/MPRIS script) since this talks to the network and needs
 JSON/HTTP handling that's painful in bash.
 
 Usage:
-  omarchyss-spotify setup               One-time browser login (PKCE)
+  omarchyss-spotify setup <client-id>   Save a Spotify app Client ID and log in
   omarchyss-spotify auth                Log in again
   omarchyss-spotify status              Print auth/config status as JSON
   omarchyss-spotify search <query>      Search tracks, print JSON array
@@ -26,6 +26,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -46,7 +47,6 @@ KEYRING_SERVICE = "omarchyss"
 KEYRING_KEY = "spotify-refresh-token"
 API_BASE = "https://api.spotify.com/v1"
 ACCOUNTS_BASE = "https://accounts.spotify.com"
-CLIENT_ID = "0388ab0cbad445a4a67499815dc37891"
 DEVICE_NAME = "OmarchySS"
 STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "omarchyss")
 SPOTIFYD_CACHE_DIR = os.path.join(STATE_DIR, "spotifyd-cache")
@@ -148,7 +148,11 @@ def http_json(url, data=None, headers=None, method=None):
 
 
 def require_client_id(config):
-    return config.get("client_id", CLIENT_ID)
+    client_id = config.get("client_id", "")
+    if not re.fullmatch(r"[0-9a-fA-F]{32}", client_id):
+        die("omarchyss-spotify: no valid Spotify Client ID configured. "
+            "Run: omarchyss-spotify setup <client-id>")
+    return client_id
 
 
 def pkce_pair():
@@ -158,8 +162,11 @@ def pkce_pair():
 
 
 def cmd_setup(args):
-    if args:
-        die("Usage: omarchyss-spotify setup")
+    if len(args) != 1 or not re.fullmatch(r"[0-9a-fA-F]{32}", args[0]):
+        die("Usage: omarchyss-spotify setup <32-character-client-id>", 2)
+    config = load_config()
+    config["client_id"] = args[0]
+    save_config(config)
     cmd_auth([])
 
 
@@ -452,7 +459,7 @@ def find_omarchyss_device(config, wait_seconds=0):
 def cmd_status(_args):
     config = load_config()
     print(json.dumps({
-        "configured": True,
+        "configured": bool(re.fullmatch(r"[0-9a-fA-F]{32}", config.get("client_id", ""))),
         "loggedIn": bool(keyring_lookup()),
         "playbackReady": spotifyd_authenticated(),
         "deviceRunning": bool(managed_spotifyd_pid()),

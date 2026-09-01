@@ -102,14 +102,21 @@ hl.bind("SUPER + SHIFT + S", hl.dsp.global("io.github.docwatz.omarchyss:toggle")
 
 Player controls (play/pause/seek/volume/shuffle/repeat) appear when Spotify
 desktop or OmarchySS's `spotifyd` device exposes a Spotify MPRIS player. To
-enable Spotify catalog search and start playback of a chosen track, complete a
-one-time login using either method:
+enable Spotify catalog search and start playback of a chosen track, create a
+personal Spotify application in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard),
+then add this Redirect URI to that app:
 
-- **GUI:** Right-click the bar icon and click **Connect Spotify**.
+- `http://127.0.0.1:8945/callback`
+
+OmarchySS uses your app's **Client ID** only; do not enter a Client Secret.
+Then complete the one-time login using either method:
+
+- **GUI:** Right-click the bar icon, paste the Client ID into **Spotify Client
+  ID**, then select **Save Client ID and connect**.
 - **Terminal:**
   ```bash
   PLUGIN_DIR=~/.config/omarchy/plugins/io.github.docwatz.omarchyss
-  python3 "$PLUGIN_DIR/bin/omarchyss-spotify" setup
+  python3 "$PLUGIN_DIR/bin/omarchyss-spotify" setup <your-client-id>
   ```
 
 A browser opens for Spotify approval. The Web API refresh token is stored in

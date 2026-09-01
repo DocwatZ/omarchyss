@@ -294,6 +294,19 @@ BarWidget {
     spotifySetupProcess.running = true
   }
 
+  function saveClientIdAndConnect(clientId) {
+    clientId = clientId.trim()
+    if (!/^[0-9a-fA-F]{32}$/.test(clientId)) {
+      searchError = "Spotify Client ID must be 32 hexadecimal characters."
+      return
+    }
+    searchError = ""
+    connectingSpotify = true
+    spotifySetupProcess.command = ["python3", root.spotifyHelperPath, "setup", clientId]
+    spotifySetupProcess.running = false
+    spotifySetupProcess.running = true
+  }
+
   function ingest(line) {
     try {
       var status = JSON.parse(String(line))
@@ -956,18 +969,42 @@ BarWidget {
           wrapMode: Text.WordWrap
           color: Qt.darker(root.bar.foreground, 1.3)
           font.pixelSize: Style.font.caption
-          text: root.spotifyLoggedIn
+          text: !root.spotifyConfigured
+            ? "Create a Spotify app, add http://127.0.0.1:8945/callback as its Redirect URI, then enter its Client ID below."
+            : root.spotifyLoggedIn
             ? "Authorize Spotify once to enable OmarchySS's built-in playback device."
             : "Connect Spotify once to enable search and built-in playback."
         }
         BarIconButton {
-          visible: !root.spotifyLoggedIn || !root.spotifyPlaybackReady
+          visible: root.spotifyConfigured && (!root.spotifyLoggedIn || !root.spotifyPlaybackReady)
           width: Style.space(28); height: Style.space(28)
           bar: root.bar
           text: "󰀄"
           enabled: !root.connectingSpotify
           tooltipText: root.spotifyLoggedIn ? "Authorize playback" : "Connect Spotify"
           onPressed: { root.startSpotifySetup(); Qt.callLater(function() { spotifyRecheck.start() }) }
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(6)
+          visible: !root.spotifyConfigured
+
+          TextField {
+            id: clientIdField
+            width: parent.width - Style.space(60)
+            placeholderText: "Spotify Client ID"
+            onAccepted: root.saveClientIdAndConnect(text)
+            Keys.onEscapePressed: root.close()
+          }
+          BarIconButton {
+            width: Style.space(28); height: Style.space(28)
+            bar: root.bar
+            text: "󰄬"
+            enabled: !root.connectingSpotify
+            tooltipText: "Save Client ID and connect"
+            onPressed: root.saveClientIdAndConnect(clientIdField.text)
+          }
         }
 
         Text {
