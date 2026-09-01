@@ -55,6 +55,14 @@ SPOTIFYD_PID_FILE = os.path.join(STATE_DIR, "spotifyd.pid")
 SPOTIFYD_LOCK_FILE = os.path.join(STATE_DIR, "spotifyd.lock")
 SPOTIFYD_LOG_FILE = os.path.join(STATE_DIR, "spotifyd.log")
 SPOTIFYD_OAUTH_PORT = 8946
+RATE_LIMIT_FILE = os.path.join(STATE_DIR, "player-cooldown.json")
+
+# Spotify rate-limits the player endpoints per account, and answers a blocked
+# request with a Retry-After that can run to many hours. Requests sent during
+# that window still count against it, so the cooldown is stored on disk: the
+# bar widget starts a fresh helper process for every poll, and an in-memory
+# backoff would be forgotten between them (and on every shell restart).
+PLAYER_PATH_PREFIX = "/me/player"
 
 
 def die(message, code=1):
@@ -317,7 +325,63 @@ def get_access_token(config):
     return config["access_token"]
 
 
+def retry_suffix(payload):
+    """Machine-readable hint the bar widget parses to size its own backoff."""
+    retry = payload.get("retryAfter") if isinstance(payload, dict) else None
+    return f" retryAfter={int(retry)}" if retry else ""
+
+
+def player_cooldown_remaining():
+    """Seconds left on a server-requested player-endpoint cooldown, else 0."""
+    try:
+        with open(RATE_LIMIT_FILE) as f:
+            until = float(json.load(f).get("until", 0))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return 0
+    return max(0, int(until - time.time()))
+
+
+def record_player_cooldown(retry_after):
+    try:
+        seconds = int(retry_after)
+    except (TypeError, ValueError):
+        seconds = 60
+    # Spotify sometimes answers with a very small Retry-After even though the
+    # block is longer; keep a floor so a burst can't slip straight back in.
+    seconds = max(60, seconds)
+    try:
+        ensure_private_dir(STATE_DIR)
+        with open(RATE_LIMIT_FILE, "w") as f:
+            json.dump({"until": time.time() + seconds}, f)
+        os.chmod(RATE_LIMIT_FILE, 0o600)
+    except OSError:
+        pass
+    return seconds
+
+
+def clear_player_cooldown():
+    try:
+        os.unlink(RATE_LIMIT_FILE)
+    except OSError:
+        pass
+
+
 def api_request(config, path, method="GET", body=None):
+    is_player = path.startswith(PLAYER_PATH_PREFIX)
+    if is_player:
+        remaining = player_cooldown_remaining()
+        if remaining > 0:
+            # Fail without touching the network: requests sent while blocked
+            # keep the block alive.
+            return 429, {
+                "error": {
+                    "status": 429,
+                    "message": "Too many requests",
+                    "reason": "QUOTA_EXCEEDED",
+                },
+                "retryAfter": remaining,
+            }
+
     token = get_access_token(config)
     headers = {"Authorization": f"Bearer {token}"}
     data = None
@@ -332,6 +396,8 @@ def api_request(config, path, method="GET", body=None):
                 payload = json.loads(raw) if raw.strip() else {}
             except json.JSONDecodeError:
                 payload = {}
+            if is_player:
+                clear_player_cooldown()
             return resp.status, payload
     except urllib.error.HTTPError as e:
         raw = e.read()
@@ -339,6 +405,8 @@ def api_request(config, path, method="GET", body=None):
             payload = json.loads(raw) if raw else {}
         except json.JSONDecodeError:
             payload = {"error": raw.decode(errors="replace")}
+        if e.code == 429:
+            payload["retryAfter"] = record_player_cooldown(e.headers.get("Retry-After"))
         return e.code, payload
 
 
@@ -496,6 +564,7 @@ def cmd_status(_args):
         "loggedIn": bool(keyring_lookup()),
         "playbackReady": spotifyd_authenticated(),
         "deviceRunning": bool(managed_spotifyd_pid()),
+        "playerCooldown": player_cooldown_remaining(),
         "preferences": config.get("preferences", {}),
     }))
 
@@ -510,7 +579,7 @@ def cmd_search(args):
         config, f"/search?{urllib.parse.urlencode({'q': query, 'type': 'track', 'limit': limit})}"
     )
     if status != 200:
-        die(f"omarchyss-spotify: search failed ({status}): {payload.get('error', payload)}")
+        die(f"omarchyss-spotify: search failed ({status}): {payload.get('error', payload)}{retry_suffix(payload)}")
     tracks = payload.get("tracks", {}).get("items", [])
     results = []
     for t in tracks:
@@ -530,7 +599,7 @@ def cmd_devices(_args):
     config = load_config()
     status, payload = api_request(config, "/me/player/devices")
     if status != 200:
-        die(f"omarchyss-spotify: devices failed ({status}): {payload.get('error', payload)}")
+        die(f"omarchyss-spotify: devices failed ({status}): {payload.get('error', payload)}{retry_suffix(payload)}")
     print(json.dumps(payload.get("devices", [])))
 
 
@@ -540,7 +609,7 @@ def cmd_transfer(args):
     config = load_config()
     status, payload = api_request(config, "/me/player/devices")
     if status != 200:
-        die(f"omarchyss-spotify: devices failed ({status}): {payload.get('error', payload)}")
+        die(f"omarchyss-spotify: devices failed ({status}): {payload.get('error', payload)}{retry_suffix(payload)}")
     device = next((item for item in payload.get("devices", []) if item.get("id") == args[0]), None)
     if not device:
         die("That Spotify device is no longer available. Refresh the device list and try again.")
@@ -553,7 +622,7 @@ def cmd_transfer(args):
     )
     if status not in (200, 204):
         die(f"Could not switch to {device.get('name', 'that device')} ({status}): "
-            f"{payload.get('error', payload)}")
+            f"{payload.get('error', payload)}{retry_suffix(payload)}")
     print(json.dumps({"id": device["id"], "name": device.get("name", "")}))
 
 
@@ -562,7 +631,7 @@ def current_playback(config):
     if status == 204:
         return {}
     if status != 200:
-        die(f"omarchyss-spotify: playback state failed ({status}): {payload.get('error', payload)}")
+        die(f"omarchyss-spotify: playback state failed ({status}): {payload.get('error', payload)}{retry_suffix(payload)}")
     item = payload.get("item") or {}
     album = item.get("album") or {}
     images = album.get("images") or []
@@ -630,7 +699,7 @@ def cmd_control(args):
 
     status, payload = api_request(config, path, method=method)
     if status not in (200, 202, 204):
-        die(f"Spotify control failed ({status}): {payload.get('error', payload)}")
+        die(f"Spotify control failed ({status}): {payload.get('error', payload)}{retry_suffix(payload)}")
     print(json.dumps({"ok": True, "action": action}))
 
 
@@ -674,6 +743,9 @@ def cmd_play(args):
         die("omarchyss-spotify: play requires a Spotify track URI.")
     config = load_config()
     status, payload = api_request(config, "/me/player/devices")
+    if status == 429:
+        # Starting spotifyd and polling for it would just burn the cooldown.
+        die(f"omarchyss-spotify: play failed (429): {payload.get('error', payload)}{retry_suffix(payload)}")
     devices = payload.get("devices", []) if status == 200 else []
     requested_device_id = args[1] if len(args) > 1 else ""
     device = next(
@@ -690,7 +762,7 @@ def cmd_play(args):
     path = f"/me/player/play?{urllib.parse.urlencode({'device_id': device['id']})}"
     status, payload = api_request(config, path, method="PUT", body={"uris": [uri]})
     if status not in (200, 204):
-        die(f"omarchyss-spotify: play failed ({status}): {payload.get('error', payload)}\n"
+        die(f"omarchyss-spotify: play failed ({status}): {payload.get('error', payload)}{retry_suffix(payload)}\n"
             "(Playback requires Spotify Premium.)")
 
 

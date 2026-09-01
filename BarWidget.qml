@@ -261,7 +261,9 @@ BarWidget {
     if (options.length === 0) {
       options.push({
         value: "",
-        label: loadingSpotifyDevices ? "Loading devices..." : "No devices found"
+        label: loadingSpotifyDevices
+          ? "Loading devices..."
+          : (isSpotifyRateLimited() ? "Devices paused by Spotify" : "No devices found")
       })
     }
     return options
@@ -271,18 +273,47 @@ BarWidget {
     return Date.now() < spotifyRateLimitedUntil
   }
 
+  // Renders the remaining cooldown as a coarse, human-readable duration.
+  function formatSpotifyCooldown() {
+    var seconds = Math.max(0, Math.ceil((spotifyRateLimitedUntil - Date.now()) / 1000))
+    if (seconds >= 3600) {
+      var hours = Math.round(seconds / 3600)
+      return hours + (hours === 1 ? " hour" : " hours")
+    }
+    if (seconds >= 60) {
+      var minutes = Math.round(seconds / 60)
+      return minutes + (minutes === 1 ? " minute" : " minutes")
+    }
+    return "a moment"
+  }
+
+  function spotifyCooldownNotice() {
+    return "Spotify paused remote control for this account. "
+      + "Playback controls still work; devices return in about "
+      + formatSpotifyCooldown() + "."
+  }
+
+  function noteSpotifyCooldown(seconds) {
+    var until = Date.now() + Math.max(60, seconds) * 1000
+    if (until > spotifyRateLimitedUntil) spotifyRateLimitedUntil = until
+  }
+
   function describeSpotifyError(rawText, fallback) {
     var text = String(rawText || "").trim()
     if (text.indexOf("(429)") !== -1) {
-      spotifyRateLimitedUntil = Date.now() + 60000
-      return String(fallback || "")
+      // The helper reports the server's own Retry-After, which can be many
+      // hours. Honour it exactly: polling while blocked keeps the block alive.
+      var match = /retryAfter=(\d+)/.exec(text)
+      noteSpotifyCooldown(match ? parseInt(match[1], 10) : 60)
+      return spotifyCooldownNotice()
     }
     return text || fallback
   }
 
   function refreshSpotifyDevices(force) {
     if (!spotifyLoggedIn || devicesProcess.running) return
-    if (!force && isSpotifyRateLimited()) return
+    // `force` skips the polling throttle but must never skip the cooldown.
+    if (isSpotifyRateLimited()) return
     var now = Date.now()
     if (!force && now - lastSpotifyDeviceRefreshAt < 15000) return
     lastSpotifyDeviceRefreshAt = now
@@ -294,9 +325,9 @@ BarWidget {
 
   function refreshRemotePlayer(force) {
     if (!spotifyLoggedIn || nowPlayingProcess.running) return
-    if (!force && isSpotifyRateLimited()) return
+    if (isSpotifyRateLimited()) return
     var now = Date.now()
-    if (!force && now - lastRemotePlayerRefreshAt < 5000) return
+    if (!force && now - lastRemotePlayerRefreshAt < 15000) return
     lastRemotePlayerRefreshAt = now
     nowPlayingProcess.running = true
   }
@@ -462,6 +493,10 @@ BarWidget {
           root.spotifyLoggedIn = s.loggedIn === true
           root.spotifyPlaybackReady = s.playbackReady === true
           root.spotifyDeviceRunning = s.deviceRunning === true
+          // The helper persists the server's cooldown across restarts; adopt
+          // it before any polling so a shell restart can't re-hammer Spotify.
+          if (s.playerCooldown !== undefined && Number(s.playerCooldown) > 0)
+            root.noteSpotifyCooldown(Number(s.playerCooldown))
           var preferences = s.preferences || {}
           if (!root.savingScreensaverPreferences) {
             if (preferences.beatReactive !== undefined)
@@ -653,8 +688,8 @@ BarWidget {
     onExited: function(exitCode) {
       root.startingPlayback = false
       if (exitCode !== 0) {
-        root.searchError = String(playStderr.text || "").trim()
-          || "Could not start playback. Open Spotify, start any song once, then try again."
+        root.searchError = root.describeSpotifyError(playStderr.text,
+          "Could not start playback. Open Spotify, start any song once, then try again.")
       }
       root.refreshRemotePlayer(true)
       root.refreshSpotifyDevices()
@@ -681,27 +716,34 @@ BarWidget {
     id: omarchyssIcon
 
     Item {
-      implicitWidth: 28
-      implicitHeight: 28
+      // The Loader in BarIconButton fills the 16px optical canvas, so the
+      // glyph is sized from the shared bar icon metrics rather than fixed
+      // pixel values -- that keeps it in step with neighbouring bar icons
+      // (and with any bar scale the user's theme sets).
+      //
+      // Colour always follows the bar foreground so the icon matches its
+      // neighbours; the running state is shown by opacity instead, which
+      // avoids the accent colour making it the odd one out in the tray.
+      opacity: button.active ? 1.0 : 0.55
 
-      Text {
-        anchors.centerIn: parent
+      OpticalGlyph {
+        anchors.fill: parent
         text: "\ue900"
+        fontFamily: "omarchy"
+        fontSize: button.fontSize
         color: button.foreground
-        font.family: "omarchy"
-        font.pixelSize: 26
-        renderType: Text.NativeRendering
       }
 
       Text {
         anchors.centerIn: parent
+        anchors.verticalCenterOffset: Math.round(button.fontSize * 0.04)
         text: "SS"
         color: button.foreground
         font.family: button.bar ? button.bar.fontFamily : Style.font.family
-        font.pixelSize: 9
+        font.pixelSize: Math.max(5, Math.round(button.fontSize * 0.46))
         font.bold: true
+        font.letterSpacing: -0.5
         renderType: Text.NativeRendering
-        opacity: 0.95
       }
     }
   }
@@ -712,7 +754,7 @@ BarWidget {
     bar: root.bar
     iconComponent: omarchyssIcon
     active: root.running
-    activeColor: Color.accent
+    useActiveColor: false
     tooltipText: root.running
       ? "OmarchySS active — Left: stop · Right: Spotify · Middle: next" +
         (root.track ? "\n" + root.track : "")
