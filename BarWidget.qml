@@ -32,6 +32,8 @@ BarWidget {
   property double lastSpotifyDeviceRefreshAt: 0
   property double lastRemotePlayerRefreshAt: 0
   property double spotifyRateLimitedUntil: 0
+  property real pendingSeekFraction: -1
+  property real pendingVolume: -1
   property var remotePlayer: ({})
   property var searchResults: []
   property bool searching: false
@@ -169,16 +171,20 @@ BarWidget {
   }
   function seekToFraction(fraction) {
     if (remotePlayerActive) {
-      runSpotifyControl(["seek", String(Math.round(fraction * playerLength * 1000))])
+      pendingSeekFraction = fraction
+      seekDebounce.restart()
     } else if (spotifyPlayer && spotifyPlayer.canSeek && spotifyPlayer.lengthSupported) {
       var target = fraction * spotifyPlayer.length
       spotifyPlayer.seek(target - spotifyPlayer.position)
     }
   }
   function setVolume(v) {
-    if (!runSpotifyControl(["volume", String(Math.round(v * 100))])
-        && spotifyPlayer && spotifyPlayer.volumeSupported)
+    if (remotePlayerActive) {
+      pendingVolume = v
+      volumeDebounce.restart()
+    } else if (spotifyPlayer && spotifyPlayer.volumeSupported) {
       spotifyPlayer.volume = v
+    }
   }
   function toggleShuffle() {
     if (!runSpotifyControl(["shuffle", playerShuffle ? "false" : "true"])
@@ -358,6 +364,33 @@ BarWidget {
 
   Component.onCompleted: refreshSpotifyAuthStatus()
 
+  // Slider drags fire onMoved continuously; debounce seek/volume so only
+  // one control request goes out per pause instead of one per pixel of
+  // drag (which raced controlProcess restarts and burned API quota).
+  Timer {
+    id: seekDebounce
+    interval: 150
+    repeat: false
+    onTriggered: {
+      if (root.pendingSeekFraction >= 0) {
+        root.runSpotifyControl(["seek", String(Math.round(root.pendingSeekFraction * root.playerLength * 1000))])
+        root.pendingSeekFraction = -1
+      }
+    }
+  }
+
+  Timer {
+    id: volumeDebounce
+    interval: 150
+    repeat: false
+    onTriggered: {
+      if (root.pendingVolume >= 0) {
+        root.runSpotifyControl(["volume", String(Math.round(root.pendingVolume * 100))])
+        root.pendingVolume = -1
+      }
+    }
+  }
+
   GlobalShortcut {
     appid: "io.github.docwatz.omarchyss"
     name: "toggle"
@@ -510,8 +543,7 @@ BarWidget {
     }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
-        root.deviceError = String(controlStderr.text || "").trim()
-          || "Spotify control failed."
+        root.deviceError = root.describeSpotifyError(controlStderr.text, "Spotify control failed.")
       }
       root.refreshRemotePlayer(true)
       root.refreshSpotifyDevices()
