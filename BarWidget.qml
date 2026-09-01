@@ -678,39 +678,42 @@ BarWidget {
     }
   }
 
+  Component {
+    id: omarchyssIcon
+
+    Item {
+      implicitWidth: 28
+      implicitHeight: 28
+
+      Text {
+        anchors.centerIn: parent
+        text: "\ue900"
+        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+        font.family: "omarchy"
+        font.pixelSize: 26
+        renderType: Text.NativeRendering
+      }
+
+      Text {
+        anchors.centerIn: parent
+        text: "SS"
+        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+        font.family: button.bar ? button.bar.fontFamily : Style.font.family
+        font.pixelSize: 9
+        font.bold: true
+        renderType: Text.NativeRendering
+        opacity: 0.95
+      }
+    }
+  }
+
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    iconComponent: Component {
-      Item {
-        implicitWidth: 26
-        implicitHeight: 26
-
-        Text {
-          anchors.centerIn: parent
-          text: "\ue900"
-          color: root.running ? Color.accent : (root.bar ? root.bar.barForeground : Color.foreground)
-          font.family: "omarchy"
-          font.pixelSize: 22
-          renderType: Text.NativeRendering
-        }
-
-        Text {
-          anchors.centerIn: parent
-          text: "SS"
-          color: root.running ? Color.accent : (root.bar ? root.bar.barForeground : Color.foreground)
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: 7.5
-          font.bold: true
-          renderType: Text.NativeRendering
-          opacity: 0.92
-        }
-      }
-    }
+    iconComponent: omarchyssIcon
     active: root.running
     activeColor: Color.accent
-    horizontalMargin: 7.5
     tooltipText: root.running
       ? "OmarchySS active — Left: stop · Right: Spotify · Middle: next" +
         (root.track ? "\n" + root.track : "")
