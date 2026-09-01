@@ -79,7 +79,8 @@ settings, while `omarchyss --help` lists explicit commands and options.
 FIGlet mode works with any font bundled by the `figlet` package. Set **FIGlet
 font** to a name such as `standard`, `big`, `slant`, `block`, `shadow`, or
 `script`; `standard` is the default. A path to a personally installed `.flf`
-file remains supported, but that font must exist on the current machine.
+file remains supported; a missing local font automatically falls back to
+`standard`.
 
 The bar popup also provides quick **Beat-reactive effects**, **Beat
 sensitivity**, and **Custom text** controls. High sensitivity follows smaller

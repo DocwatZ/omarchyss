@@ -5,12 +5,19 @@ readonly APP_CLASS="io.github.docwatz.omarchyss"
 readonly PLUGIN_DIR="$(dirname "$(dirname "$(readlink -f "$0")")")"
 readonly MANIFEST="${PLUGIN_DIR}/manifest.json"
 readonly SHELL_JSON="${HOME}/.config/omarchy/shell.json"
-readonly STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/omarchyss-${UID}"
+readonly STATE_ROOT="${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}}"
+readonly STATE_DIR="${STATE_ROOT}/omarchyss-${UID}"
 readonly STATE_FILE="$STATE_DIR/spotify-was-playing"
 readonly BRANDING_FILE="${HOME}/.config/omarchy/branding/screensaver.txt"
 readonly SPOTIFY_HELPER="$(dirname "$(readlink -f "$0")")/omarchyss-spotify"
 
-mkdir -p -m 700 "$STATE_DIR"
+umask 077
+mkdir -p "$STATE_DIR"
+[[ -d $STATE_DIR && ! -L $STATE_DIR ]] || {
+  printf '%s\n' "OmarchySS: runtime state path is not a directory: $STATE_DIR" >&2
+  exit 1
+}
+chmod 700 "$STATE_DIR"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -181,8 +188,8 @@ figlet_available() { have figlet; }
 # Accepts either a name FIGlet already knows (standard, big, slant, ... from
 # figlet's own font directory) or a path to a local .flf file, so a stock
 # install gets working FIGlet art without needing to source a font first.
-# Prints nothing and warns when the font cannot be resolved, letting the
-# caller fall back to plain text rather than rendering nothing at all.
+# Falls back to figlet's packaged `standard` font when the selected local path
+# no longer exists. That keeps settings copied from another machine usable.
 resolve_figlet_font() {
   local font=$1
   [[ -n $font ]] || return 1
@@ -196,8 +203,8 @@ resolve_figlet_font() {
     printf '%s' "$font"
     return 0
   fi
-  printf '%s\n' "OmarchySS: FIGlet font '$1' not found; using plain text instead." >&2
-  return 1
+  printf '%s\n' "OmarchySS: FIGlet font '$1' not found; using the standard font instead." >&2
+  printf '%s' "standard"
 }
 
 # Resolves the text that should currently be shown, for the given text mode.

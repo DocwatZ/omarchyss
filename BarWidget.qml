@@ -59,8 +59,8 @@ BarWidget {
     ? String(remotePlayer.title || "") : (spotifyPlayer ? String(spotifyPlayer.trackTitle || "") : "")
   readonly property string playerTrackArtist: remotePlayerActive
     ? String(remotePlayer.artists || "") : (spotifyPlayer ? String(spotifyPlayer.trackArtist || "") : "")
-  readonly property string playerArtUrl: remotePlayerActive
-    ? String(remotePlayer.image || "") : (spotifyPlayer ? String(spotifyPlayer.trackArtUrl || "") : "")
+  readonly property string playerArtUrl: trustedSpotifyArtUrl(remotePlayerActive
+    ? String(remotePlayer.image || "") : (spotifyPlayer ? String(spotifyPlayer.trackArtUrl || "") : ""))
   readonly property real playerPosition: remotePlayerActive
     ? Number(remotePlayer.progressMs || 0) / 1000 : (spotifyPlayer ? spotifyPlayer.position : 0)
   readonly property real playerLength: remotePlayerActive
@@ -96,6 +96,13 @@ BarWidget {
       }
     }
     return playingPlayer || spotifydPlayer || desktopPlayer
+  }
+
+  // Album art comes from Spotify's documented CDN. Restricting this keeps
+  // MPRIS metadata from causing the shell to read arbitrary local paths or
+  // request arbitrary remote resources.
+  function trustedSpotifyArtUrl(url) {
+    return /^https:\/\/i\.scdn\.co\/image\//.test(String(url)) ? String(url) : ""
   }
 
   function fmtTime(seconds) {
@@ -630,6 +637,7 @@ BarWidget {
           }
 
           Text {
+            textFormat: Text.PlainText
             anchors.centerIn: parent
             visible: root.playerArtUrl === ""
             text: "󰝚"
@@ -644,6 +652,7 @@ BarWidget {
           width: parent.width - Style.space(74)
 
           Text {
+            textFormat: Text.PlainText
             text: root.playerTrackTitle || "Nothing playing"
             color: root.bar.foreground
             font.family: root.bar.fontFamily
@@ -654,6 +663,7 @@ BarWidget {
           }
 
           Text {
+            textFormat: Text.PlainText
             text: root.playerTrackArtist
             color: Qt.darker(root.bar.foreground, 1.3)
             font.family: root.bar.fontFamily
@@ -684,12 +694,14 @@ BarWidget {
         Row {
           width: parent.width
           Text {
+            textFormat: Text.PlainText
             text: root.fmtTime(root.playerPosition)
             color: Qt.darker(root.bar.foreground, 1.4)
             font.pixelSize: Style.font.caption
           }
           Item { width: parent.width - Style.space(80); height: 1 }
           Text {
+            textFormat: Text.PlainText
             text: root.fmtTime(root.playerLength)
             color: Qt.darker(root.bar.foreground, 1.4)
             font.pixelSize: Style.font.caption
@@ -752,6 +764,7 @@ BarWidget {
         visible: root.hasPlayer && root.playerVolumeSupported
 
         Text {
+          textFormat: Text.PlainText
           text: "󰕾"
           color: root.bar.foreground
           font.pixelSize: Style.font.body
@@ -792,6 +805,7 @@ BarWidget {
       }
 
       Text {
+        textFormat: Text.PlainText
         visible: root.deviceError !== ""
         width: parent.width
         wrapMode: Text.WordWrap
@@ -806,6 +820,7 @@ BarWidget {
         spacing: Style.space(6)
 
         Text {
+          textFormat: Text.PlainText
           text: "Screensaver"
           color: root.bar.foreground
           font.family: root.bar.fontFamily
@@ -818,6 +833,7 @@ BarWidget {
           spacing: Style.space(8)
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width - beatToggle.width - parent.spacing
             anchors.verticalCenter: parent.verticalCenter
             text: "Beat-reactive effects"
@@ -862,6 +878,7 @@ BarWidget {
         }
 
         Text {
+          textFormat: Text.PlainText
           visible: root.running
           width: parent.width
           wrapMode: Text.WordWrap
@@ -873,6 +890,7 @@ BarWidget {
         }
 
         Text {
+          textFormat: Text.PlainText
           visible: root.screensaverSettingsError !== ""
           width: parent.width
           wrapMode: Text.WordWrap
@@ -888,6 +906,7 @@ BarWidget {
         spacing: Style.space(6)
 
         Text {
+          textFormat: Text.PlainText
           text: "Search Spotify"
           color: root.bar.foreground
           font.family: root.bar.fontFamily
@@ -917,6 +936,7 @@ BarWidget {
         }
 
         Text {
+          textFormat: Text.PlainText
           visible: !root.spotifyLoggedIn || !root.spotifyPlaybackReady
           width: parent.width
           wrapMode: Text.WordWrap
@@ -937,6 +957,7 @@ BarWidget {
         }
 
         Text {
+          textFormat: Text.PlainText
           visible: root.connectingSpotify
           text: "Waiting for Spotify authorization..."
           color: Qt.darker(root.bar.foreground, 1.3)
@@ -944,18 +965,21 @@ BarWidget {
         }
 
         Text {
+          textFormat: Text.PlainText
           visible: root.searching
           text: "Searching..."
           color: Qt.darker(root.bar.foreground, 1.3)
           font.pixelSize: Style.font.caption
         }
         Text {
+          textFormat: Text.PlainText
           visible: root.startingPlayback
           text: "Starting playback..."
           color: Qt.darker(root.bar.foreground, 1.3)
           font.pixelSize: Style.font.caption
         }
         Text {
+          textFormat: Text.PlainText
           visible: root.searchError !== ""
           width: parent.width
           wrapMode: Text.WordWrap
@@ -971,6 +995,7 @@ BarWidget {
             spacing: Style.space(8)
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width - Style.space(34)
               elide: Text.ElideRight
               text: modelData.name + "  ·  " + modelData.artists
