@@ -472,6 +472,10 @@ BarWidget {
   Process {
     id: devicesProcess
     command: ["python3", root.spotifyHelperPath, "devices"]
+    stderr: StdioCollector {
+      id: devicesStderr
+      waitForEnd: true
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -489,6 +493,14 @@ BarWidget {
           root.spotifyDevices = []
           root.deviceError = "Could not load Spotify devices."
         }
+      }
+    }
+    onExited: function(exitCode) {
+      root.loadingSpotifyDevices = false
+      if (exitCode !== 0) {
+        root.spotifyDevices = []
+        root.deviceError = String(devicesStderr.text || "").trim()
+          || "Could not load Spotify devices."
       }
     }
   }
