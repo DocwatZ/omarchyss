@@ -62,11 +62,26 @@ def die(message, code=1):
     sys.exit(code)
 
 
+# A Client ID that shipped hardcoded in the plugin (removed after its shared
+# Spotify Web API quota was exhausted). Configs written by those releases
+# have this saved as "client_id" even though the user never entered it, so
+# it must be purged -- otherwise cmd_status keeps reporting "configured" and
+# the popup never prompts for a personal Client ID.
+LEGACY_SHARED_CLIENT_ID = "0388ab0cbad445a4a67499815dc37891"
+
+
 def load_config():
     if not os.path.isfile(CONFIG_FILE):
         return {}
     with open(CONFIG_FILE) as f:
-        return json.load(f)
+        config = json.load(f)
+    if config.get("client_id") == LEGACY_SHARED_CLIENT_ID:
+        config.pop("client_id", None)
+        config.pop("access_token", None)
+        config.pop("access_token_expires_at", None)
+        keyring_clear()
+        save_config(config, preferences_authoritative=True)
+    return config
 
 
 def save_config(config, preferences_authoritative=False):
