@@ -682,15 +682,15 @@ BarWidget {
     id: omarchyssIcon
 
     Item {
-      implicitWidth: 28
-      implicitHeight: 28
+      implicitWidth: 24
+      implicitHeight: 24
 
       Text {
         anchors.centerIn: parent
         text: "\ue900"
         color: button.active && button.useActiveColor ? button.activeColor : button.foreground
         font.family: "omarchy"
-        font.pixelSize: 26
+        font.pixelSize: 22
         renderType: Text.NativeRendering
       }
 
@@ -699,10 +699,10 @@ BarWidget {
         text: "SS"
         color: button.active && button.useActiveColor ? button.activeColor : button.foreground
         font.family: button.bar ? button.bar.fontFamily : Style.font.family
-        font.pixelSize: 9
+        font.pixelSize: 7.5
         font.bold: true
         renderType: Text.NativeRendering
-        opacity: 0.95
+        opacity: 0.92
       }
     }
   }
