@@ -119,6 +119,15 @@ Then complete the one-time login using either method:
   python3 "$PLUGIN_DIR/bin/omarchyss-spotify" setup <your-client-id>
   ```
 
+Spotify's Web API gives personal ("Development Mode") apps a small quota that
+is shared across *all* Development Mode apps on your Spotify developer
+account, and it cannot be raised for hobby projects (Extended Quota Mode
+requires a registered business with 250k+ monthly active users). If you see
+"Spotify API quota reached", it isn't a bug — OmarchySS already throttles its
+own polling, but Spotify's account-wide limit can still be hit, especially if
+you have other Development Mode apps. It clears on its own; wait a bit and
+retry, or use the manual refresh button in the popup.
+
 A browser opens for Spotify approval. The Web API refresh token is stored in
 the system keyring (`secret-tool`/gnome-keyring). The playback authorization
 is stored in a user-only file under `~/.local/state/omarchyss/`.

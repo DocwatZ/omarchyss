@@ -31,6 +31,7 @@ BarWidget {
   property string deviceError: ""
   property double lastSpotifyDeviceRefreshAt: 0
   property double lastRemotePlayerRefreshAt: 0
+  property double spotifyRateLimitedUntil: 0
   property var remotePlayer: ({})
   property var searchResults: []
   property bool searching: false
@@ -241,8 +242,23 @@ BarWidget {
     return options
   }
 
+  function isSpotifyRateLimited() {
+    return Date.now() < spotifyRateLimitedUntil
+  }
+
+  function describeSpotifyError(rawText, fallback) {
+    var text = String(rawText || "").trim()
+    if (text.indexOf("(429)") !== -1) {
+      spotifyRateLimitedUntil = Date.now() + 60000
+      return "Spotify API quota reached for now. This clears automatically " +
+        "\u2014 try again in a minute."
+    }
+    return text || fallback
+  }
+
   function refreshSpotifyDevices(force) {
     if (!spotifyLoggedIn || devicesProcess.running) return
+    if (!force && isSpotifyRateLimited()) return
     var now = Date.now()
     if (!force && now - lastSpotifyDeviceRefreshAt < 15000) return
     lastSpotifyDeviceRefreshAt = now
@@ -254,6 +270,7 @@ BarWidget {
 
   function refreshRemotePlayer(force) {
     if (!spotifyLoggedIn || nowPlayingProcess.running) return
+    if (!force && isSpotifyRateLimited()) return
     var now = Date.now()
     if (!force && now - lastRemotePlayerRefreshAt < 5000) return
     lastRemotePlayerRefreshAt = now
@@ -466,6 +483,10 @@ BarWidget {
   Process {
     id: nowPlayingProcess
     command: ["python3", root.spotifyHelperPath, "now-playing"]
+    stderr: StdioCollector {
+      id: nowPlayingStderr
+      waitForEnd: true
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -475,6 +496,9 @@ BarWidget {
           root.remotePlayer = ({})
         }
       }
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) root.describeSpotifyError(nowPlayingStderr.text, "")
     }
   }
 
@@ -524,8 +548,7 @@ BarWidget {
       root.loadingSpotifyDevices = false
       if (exitCode !== 0) {
         root.spotifyDevices = []
-        root.deviceError = String(devicesStderr.text || "").trim()
-          || "Could not load Spotify devices."
+        root.deviceError = root.describeSpotifyError(devicesStderr.text, "Could not load Spotify devices.")
       }
     }
   }
