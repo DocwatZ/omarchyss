@@ -29,6 +29,7 @@ BarWidget {
   property bool loadingSpotifyDevices: false
   property bool switchingSpotifyDevice: false
   property string deviceError: ""
+  property double lastSpotifyDeviceRefreshAt: 0
   property var remotePlayer: ({})
   property var searchResults: []
   property bool searching: false
@@ -239,8 +240,11 @@ BarWidget {
     return options
   }
 
-  function refreshSpotifyDevices() {
+  function refreshSpotifyDevices(force) {
     if (!spotifyLoggedIn || devicesProcess.running) return
+    var now = Date.now()
+    if (!force && now - lastSpotifyDeviceRefreshAt < 15000) return
+    lastSpotifyDeviceRefreshAt = now
     loadingSpotifyDevices = true
     deviceError = ""
     devicesProcess.running = false
@@ -309,8 +313,6 @@ BarWidget {
   onPopupOpenChanged: {
     if (popupOpen) {
       refreshSpotifyAuthStatus()
-      refreshSpotifyDevices()
-      refreshRemotePlayer()
     }
   }
 
@@ -812,7 +814,7 @@ BarWidget {
           text: root.loadingSpotifyDevices || root.switchingSpotifyDevice ? "󰑓" : "󰑐"
           enabled: !root.loadingSpotifyDevices && !root.switchingSpotifyDevice
           tooltipText: "Refresh Spotify devices"
-          onPressed: root.refreshSpotifyDevices()
+          onPressed: root.refreshSpotifyDevices(true)
         }
       }
 
