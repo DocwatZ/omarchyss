@@ -688,7 +688,7 @@ BarWidget {
       Text {
         anchors.centerIn: parent
         text: "\ue900"
-        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+        color: root.running ? Color.accent : (root.bar ? root.bar.barForeground : Color.foreground)
         font.family: "omarchy"
         font.pixelSize: 22
         renderType: Text.NativeRendering
@@ -697,8 +697,8 @@ BarWidget {
       Text {
         anchors.centerIn: parent
         text: "SS"
-        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
-        font.family: button.bar ? button.bar.fontFamily : Style.font.family
+        color: root.running ? Color.accent : (root.bar ? root.bar.barForeground : Color.foreground)
+        font.family: root.bar ? root.bar.fontFamily : Style.font.family
         font.pixelSize: 7.5
         font.bold: true
         renderType: Text.NativeRendering
