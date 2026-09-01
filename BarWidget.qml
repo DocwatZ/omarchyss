@@ -275,8 +275,7 @@ BarWidget {
     var text = String(rawText || "").trim()
     if (text.indexOf("(429)") !== -1) {
       spotifyRateLimitedUntil = Date.now() + 60000
-      return "Spotify API quota reached for now. This clears automatically " +
-        "\u2014 try again in a minute."
+      return String(fallback || "")
     }
     return text || fallback
   }
@@ -688,7 +687,7 @@ BarWidget {
       Text {
         anchors.centerIn: parent
         text: "\ue900"
-        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+        color: button.foreground
         font.family: "omarchy"
         font.pixelSize: 26
         renderType: Text.NativeRendering
@@ -697,7 +696,7 @@ BarWidget {
       Text {
         anchors.centerIn: parent
         text: "SS"
-        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+        color: button.foreground
         font.family: button.bar ? button.bar.fontFamily : Style.font.family
         font.pixelSize: 9
         font.bold: true
