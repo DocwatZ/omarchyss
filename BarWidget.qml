@@ -678,42 +678,16 @@ BarWidget {
     }
   }
 
-  Component {
-    id: omarchyssIcon
-
-    Item {
-      implicitWidth: 24
-      implicitHeight: 24
-
-      Text {
-        anchors.centerIn: parent
-        text: "\ue900"
-        color: root.running ? Color.accent : (root.bar ? root.bar.barForeground : Color.foreground)
-        font.family: "omarchy"
-        font.pixelSize: 22
-        renderType: Text.NativeRendering
-      }
-
-      Text {
-        anchors.centerIn: parent
-        text: "SS"
-        color: root.running ? Color.accent : (root.bar ? root.bar.barForeground : Color.foreground)
-        font.family: root.bar ? root.bar.fontFamily : Style.font.family
-        font.pixelSize: 7.5
-        font.bold: true
-        renderType: Text.NativeRendering
-        opacity: 0.92
-      }
-    }
-  }
-
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    iconComponent: omarchyssIcon
+    text: "\ue900"
+    fontFamily: "omarchy"
+    fontSize: 22
     active: root.running
     activeColor: Color.accent
+    horizontalMargin: 7.5
     tooltipText: root.running
       ? "OmarchySS active — Left: stop · Right: Spotify · Middle: next" +
         (root.track ? "\n" + root.track : "")
@@ -725,6 +699,17 @@ BarWidget {
       else if (button === Qt.MiddleButton) root.nextTrack()
     }
     onWheelMoved: function(delta) { if (delta > 0) root.previousTrack(); else root.nextTrack() }
+
+    Text {
+      anchors.centerIn: parent
+      text: "SS"
+      color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+      font.family: root.bar ? root.bar.fontFamily : Style.font.family
+      font.pixelSize: 7.5
+      font.bold: true
+      renderType: Text.NativeRendering
+      opacity: 0.92
+    }
   }
 
   KeyboardPanel {
