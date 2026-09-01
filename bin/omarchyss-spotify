@@ -645,11 +645,110 @@ def local_activate(name=None):
     return False
 
 
+def local_track_id():
+    """Spotify track id currently loaded, from mpris:trackid."""
+    name = spotifyd_bus_name()
+    if not name:
+        return ""
+    metadata = unwrap_variant(busctl_get(name, "Metadata")) or {}
+    trackid = str(metadata.get("mpris:trackid", ""))
+    return trackid.rsplit("/", 1)[-1] if "/spotify/track/" in trackid else ""
+
+
+def wait_for_track(expected_id, timeout=8.0):
+    """Wait for a track to load; returns the id that actually started."""
+    deadline = time.time() + timeout
+    current = ""
+    while time.time() < deadline:
+        current = local_track_id()
+        if current == expected_id:
+            return current
+        time.sleep(0.25)
+    return current
+
+
+def album_context_offset_uri(config, target_uri):
+    """URI to hand OpenUri so spotifyd's off-by-one lands on target_uri.
+
+    spotifyd 0.4.2 loads the track's album as the context and passes the
+    track's 1-based number as a 0-based index, so it starts the following
+    track. Feeding it the track one position earlier cancels that out
+    exactly. Only /me/player* is rate limited, so these lookups still work
+    while remote control is blocked.
+    """
+    track_id = target_uri.rsplit(":", 1)[-1]
+    status, track = api_request(config, f"/tracks/{track_id}")
+    if status != 200:
+        return None
+    album_id = (track.get("album") or {}).get("id")
+    if not album_id:
+        return None
+    number = track.get("track_number") or 0
+    disc = track.get("disc_number") or 1
+
+    status, payload = api_request(config, f"/albums/{album_id}/tracks?limit=50")
+    if status != 200:
+        return None
+    items = payload.get("items", [])
+
+    # The context index counts across discs, while track_number restarts on
+    # each disc, so work out the target's absolute position first.
+    ordered = sorted(
+        items,
+        key=lambda i: ((i.get("disc_number") or 1), (i.get("track_number") or 0)),
+    )
+    position = next(
+        (
+            index
+            for index, item in enumerate(ordered)
+            if (item.get("disc_number") or 1) == disc
+            and (item.get("track_number") or 0) == number
+        ),
+        None,
+    )
+    if position is None:
+        return None
+    if position == 0:
+        # Album URIs load at index 0, which is exactly the first track.
+        return f"spotify:album:{album_id}"
+    # Need spotifyd to use index `position`, so hand it a track numbered
+    # `position`; that is the preceding track on a single-disc album.
+    donor = next(
+        (item for item in items if (item.get("track_number") or 0) == position),
+        None,
+    )
+    return donor.get("uri") if donor else None
+
+
 def local_play(uri):
     name = spotifyd_bus_name()
     if not name or not local_activate(name):
         return False
-    return busctl_call(name, MPRIS_PATH, MPRIS_PLAYER_IFACE, "OpenUri", "s", uri)
+    wanted = uri.rsplit(":", 1)[-1]
+
+    open_uri = uri
+    try:
+        adjusted = album_context_offset_uri(load_config(), uri)
+        if adjusted:
+            open_uri = adjusted
+    except SystemExit:
+        raise
+    except Exception:
+        open_uri = uri
+
+    if not busctl_call(name, MPRIS_PATH, MPRIS_PLAYER_IFACE, "OpenUri", "s", open_uri):
+        return False
+    # Always confirm the intended track actually started; never let a
+    # mismatch pass silently as playing the wrong song.
+    if wait_for_track(wanted, timeout=8.0) == wanted:
+        return True
+    if open_uri != uri:
+        # spotifyd may have been fixed upstream, in which case the
+        # compensation is what threw it off -- retry with the plain URI.
+        if busctl_call(name, MPRIS_PATH, MPRIS_PLAYER_IFACE, "OpenUri", "s", uri):
+            if wait_for_track(wanted, timeout=8.0) == wanted:
+                return True
+    return False
 
 
 LOCAL_CONTROL_METHODS = {
@@ -915,7 +1014,7 @@ def cmd_play(args):
         start_spotifyd()
         if local_play(uri):
             return
-        die(f"omarchyss-spotify: play failed (429): {payload.get('error', payload)}{retry_suffix(payload)}")
+        die("omarchyss-spotify: could not start that track on the local device.")
     devices = payload.get("devices", []) if status == 200 else []
     requested_device_id = args[1] if len(args) > 1 else ""
     device = next(
