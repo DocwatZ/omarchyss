@@ -30,6 +30,7 @@ BarWidget {
   property bool switchingSpotifyDevice: false
   property string deviceError: ""
   property double lastSpotifyDeviceRefreshAt: 0
+  property double lastRemotePlayerRefreshAt: 0
   property var remotePlayer: ({})
   property var searchResults: []
   property bool searching: false
@@ -251,8 +252,11 @@ BarWidget {
     devicesProcess.running = true
   }
 
-  function refreshRemotePlayer() {
+  function refreshRemotePlayer(force) {
     if (!spotifyLoggedIn || nowPlayingProcess.running) return
+    var now = Date.now()
+    if (!force && now - lastRemotePlayerRefreshAt < 5000) return
+    lastRemotePlayerRefreshAt = now
     nowPlayingProcess.running = true
   }
 
@@ -485,7 +489,7 @@ BarWidget {
         root.deviceError = String(controlStderr.text || "").trim()
           || "Spotify control failed."
       }
-      root.refreshRemotePlayer()
+      root.refreshRemotePlayer(true)
       root.refreshSpotifyDevices()
     }
   }
@@ -536,7 +540,7 @@ BarWidget {
       root.switchingSpotifyDevice = false
       if (exitCode === 0) {
         root.refreshSpotifyDevices()
-        root.refreshRemotePlayer()
+        root.refreshRemotePlayer(true)
       } else {
         root.deviceError = String(transferStderr.text || "").trim()
           || "Could not switch Spotify devices."
@@ -572,7 +576,7 @@ BarWidget {
         root.searchError = String(playStderr.text || "").trim()
           || "Could not start playback. Open Spotify, start any song once, then try again."
       }
-      root.refreshRemotePlayer()
+      root.refreshRemotePlayer(true)
       root.refreshSpotifyDevices()
     }
   }
