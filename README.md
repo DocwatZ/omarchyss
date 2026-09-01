@@ -26,8 +26,8 @@ the bar.
   previous/next.
 - The popup shows album art, track/artist, a live progress bar with seek,
   volume, shuffle/repeat, and transport controls — all driven directly by
-  Quickshell's native MPRIS service, so it updates instantly and works with
-  any MPRIS player (not just Spotify).
+  Quickshell's native MPRIS service, so it updates instantly for Spotify and
+  spotifyd. It never controls unrelated media players such as a browser.
 - Optional Spotify catalog **search** from the same popup: search by song or
   artist and play it on the selected Spotify Connect device. When no device
   is active, OmarchySS starts its own headless player. This is a separate,
@@ -45,14 +45,14 @@ the bar.
 ## Requirements
 
 `ttfx`, `jq`, `hyprctl`, and either Alacritty or Foot are required. Spotify
-metadata and the screensaver's pause-on-start/resume-on-stop behavior require
-`playerctl`; beat-reactive effects require `cava`.
+metadata, player controls, and the screensaver's pause-on-start/resume-on-stop
+behavior require `playerctl`; beat-reactive effects require `cava`.
 Spotify search and built-in playback additionally require `python3`,
 `secret-tool` (part of `libsecret`), and `spotifyd`. Python and libsecret
 ship by default on Omarchy.
 
 ```bash
-omarchy pkg add playerctl cava spotifyd
+omarchy pkg add playerctl cava spotifyd figlet
 ```
 
 Beat detection works when audio is playing through this computer. Spotify
@@ -66,12 +66,20 @@ running even when **Pause Spotify while active** is enabled.
 omarchy plugin add https://github.com/DocwatZ/omarchyss.git --enable
 ```
 
-Configure OmarchySS through the bar widget settings. Its launch/stop action is
-also available as:
+Add the bundled terminal command to your `PATH` once:
 
 ```bash
-~/.config/omarchy/plugins/io.github.docwatz.omarchyss/bin/omarchyss start
+~/.config/omarchy/plugins/io.github.docwatz.omarchyss/bin/omarchyss install
 ```
+
+Then configure OmarchySS through the bar widget settings and run `omarchyss`
+to toggle it from a terminal. `omarchyss restart` picks up the current widget
+settings, while `omarchyss --help` lists explicit commands and options.
+
+FIGlet mode works with any font bundled by the `figlet` package. Set **FIGlet
+font** to a name such as `standard`, `big`, `slant`, `block`, `shadow`, or
+`script`; `standard` is the default. A path to a personally installed `.flf`
+file remains supported, but that font must exist on the current machine.
 
 The bar popup also provides quick **Beat-reactive effects**, **Beat
 sensitivity**, and **Custom text** controls. High sensitivity follows smaller
@@ -91,9 +99,10 @@ hl.bind("SUPER + SHIFT + S", hl.dsp.global("io.github.docwatz.omarchyss:toggle")
 
 ## Spotify search setup
 
-Player controls (play/pause/seek/volume/shuffle/repeat) work out of the box
-via MPRIS — no setup needed. To enable Spotify catalog search and start
-playback of a chosen track, complete a one-time login using either method:
+Player controls (play/pause/seek/volume/shuffle/repeat) appear when Spotify
+desktop or OmarchySS's `spotifyd` device exposes a Spotify MPRIS player. To
+enable Spotify catalog search and start playback of a chosen track, complete a
+one-time login using either method:
 
 - **GUI:** Right-click the bar icon and click **Connect Spotify**.
 - **Terminal:**

@@ -2,6 +2,9 @@
 set -euo pipefail
 
 readonly APP_CLASS="io.github.docwatz.omarchyss"
+readonly PLUGIN_DIR="$(dirname "$(dirname "$(readlink -f "$0")")")"
+readonly MANIFEST="${PLUGIN_DIR}/manifest.json"
+readonly SHELL_JSON="${HOME}/.config/omarchy/shell.json"
 readonly STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/omarchyss-${UID}"
 readonly STATE_FILE="$STATE_DIR/spotify-was-playing"
 readonly BRANDING_FILE="${HOME}/.config/omarchy/branding/screensaver.txt"
@@ -10,6 +13,70 @@ readonly SPOTIFY_HELPER="$(dirname "$(readlink -f "$0")")/omarchyss-spotify"
 mkdir -p -m 700 "$STATE_DIR"
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# Reads a bar widget setting, preferring the value configured on the bar
+# (~/.config/omarchy/shell.json), then the plugin manifest's default, then the
+# supplied fallback. This keeps the terminal command in sync with whatever was
+# set through `omarchy bar set` or the bar widget itself.
+resolve_setting() {
+  local key=$1 fallback=$2 value=""
+  if [[ -f $SHELL_JSON ]] && have jq; then
+    value=$(jq -r --arg id "$APP_CLASS" --arg key "$key" '
+      [.bar.layout.left[]?, .bar.layout.center[]?, .bar.layout.right[]?]
+      | map(select(.id == $id)) | .[0][$key]? // empty
+    ' "$SHELL_JSON" 2>/dev/null || true)
+  fi
+  if [[ -z $value && -f $MANIFEST ]] && have jq; then
+    value=$(jq -r --arg key "$key" '.barWidget.defaults[$key]? // empty' "$MANIFEST" 2>/dev/null || true)
+  fi
+  printf '%s' "${value:-$fallback}"
+}
+
+# Starts (or toggles off) the screensaver using the settings configured on the
+# bar, so `omarchyss` from a terminal behaves exactly like clicking the widget.
+# Any flags passed through override the resolved values.
+start_from_settings() {
+  start \
+    --effect "$(resolve_setting effect random)" \
+    --text-mode "$(resolve_setting textMode track)" \
+    --custom-text "$(resolve_setting customText '')" \
+    --pause-spotify "$(resolve_setting pauseSpotify true)" \
+    --timeout "$(resolve_setting autoCloseSeconds 0)" \
+    --beat-reactive "$(resolve_setting beatReactive false)" \
+    --beat-sensitivity "$(resolve_setting beatSensitivity medium)" \
+    --font-size "$(resolve_setting fontSize 28)" \
+    --use-figlet "$(resolve_setting useFiglet false)" \
+    --figlet-font "$(resolve_setting figletFontPath '')" \
+    "$@"
+}
+
+# Puts `omarchyss` on PATH. Plugins are plain git clones with no install hook,
+# so this is run once by hand after `omarchy plugin add` (see the README).
+install_command() {
+  local target=${1:-$HOME/.local/bin} self
+  self=$(readlink -f "$0")
+  mkdir -p "$target"
+  ln -sfn "$self" "$target/omarchyss"
+  printf '%s\n' "Installed $target/omarchyss -> $self"
+  case ":${PATH}:" in
+    *":${target}:"*) ;;
+    *) printf '%s\n' "Note: $target is not on your PATH; add it to your shell profile." >&2 ;;
+  esac
+}
+
+usage() {
+  cat <<'EOF'
+Usage: omarchyss [command]
+
+  (no command)    Toggle the screensaver using your bar widget settings
+  start [flags]   Start (or toggle off) with explicit settings
+  stop            Stop a running screensaver
+  restart         Restart, picking up current settings
+  status          Print screensaver/playback status as JSON
+  media <action>  play-pause | next | previous
+  install [dir]   Symlink this script onto PATH (default: ~/.local/bin)
+EOF
+}
 
 spotify_player() {
   have playerctl || return 1
@@ -109,6 +176,29 @@ media() {
 }
 
 figlet_available() { have figlet; }
+
+# Resolves a configured FIGlet font into the value to pass to `figlet -f`.
+# Accepts either a name FIGlet already knows (standard, big, slant, ... from
+# figlet's own font directory) or a path to a local .flf file, so a stock
+# install gets working FIGlet art without needing to source a font first.
+# Prints nothing and warns when the font cannot be resolved, letting the
+# caller fall back to plain text rather than rendering nothing at all.
+resolve_figlet_font() {
+  local font=$1
+  [[ -n $font ]] || return 1
+  figlet_available || return 1
+  [[ $font == "~/"* ]] && font="${HOME}/${font:2}"
+  if [[ -f $font ]]; then
+    printf '%s' "$font"
+    return 0
+  fi
+  if figlet -f "$font" "A" >/dev/null 2>&1; then
+    printf '%s' "$font"
+    return 0
+  fi
+  printf '%s\n' "OmarchySS: FIGlet font '$1' not found; using plain text instead." >&2
+  return 1
+}
 
 # Resolves the text that should currently be shown, for the given text mode.
 # Shared by start() (to size the window before it opens) and run() (on every
@@ -249,7 +339,7 @@ render_text() {
   # --anchor-canvas c --anchor-text c, so fitting the content here (rather
   # than letting FIGlet wrap it) is what keeps it centered and unclipped.
   local raw=$1
-  if [[ $USE_FIGLET == true ]] && [[ -n $FIGLET_FONT_PATH ]] && [[ -f $FIGLET_FONT_PATH ]] && figlet_available; then
+  if [[ $USE_FIGLET == true ]] && [[ -n $FIGLET_FONT_PATH ]] && figlet_available; then
     local cols lines rendered
     read -r cols lines <<< "$(fit_font_size_to_window "$raw" "$FIGLET_FONT_PATH" "$FONT_SIZE_MAX")"
     cols=$(( cols > 4 ? cols - 2 : cols ))
@@ -456,7 +546,11 @@ restart() {
     printf '%s\n' "OmarchySS could not close the existing window." >&2
     return 1
   }
-  start "$@"
+  if (($#)); then
+    start "$@"
+  else
+    start_from_settings
+  fi
 }
 
 # Populated by run() before the EXIT trap is registered. It is intentionally a
@@ -498,7 +592,11 @@ exec_ttfx_effect() {
 run() {
   local effect=$1 text_mode=$2 custom_text=$3 timeout=$4 beat_reactive=$5
   USE_FIGLET=${6:-false}
-  FIGLET_FONT_PATH=${7:-}
+  if [[ $USE_FIGLET == true ]]; then
+    FIGLET_FONT_PATH=$(resolve_figlet_font "${7:-}" || true)
+  else
+    FIGLET_FONT_PATH=""
+  fi
   FONT_SIZE_MAX=${8:-28}
   local beat_sensitivity=${9:-medium}
   local started=$SECONDS effect_arg raw_text="" next_text detector_status effect_status effect_interrupted
@@ -593,5 +691,8 @@ case "${1:-}" in
   status) status ;;
   media) shift; media "${1:-}" ;;
   run) shift; run "$@" ;;
-  *) printf '%s\n' "Usage: omarchyss {start|restart|stop|status|media}" >&2; exit 2 ;;
+  install) shift; install_command "$@" ;;
+  help|-h|--help) usage ;;
+  ""|--*) start_from_settings "$@" ;;
+  *) usage >&2; exit 2 ;;
 esac

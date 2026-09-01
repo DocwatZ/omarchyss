@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.docwatz.omarchyss",
   "name": "OmarchySS",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": "DocwatZ",
   "license": "MIT",
   "homepage": "https://github.com/DocwatZ/omarchyss",
@@ -27,7 +27,7 @@
       "beatSensitivity": "high",
       "fontSize": 28,
       "useFiglet": false,
-      "figletFontPath": ""
+      "figletFontPath": "standard"
     },
     "schema": [
       { "key": "effect", "type": "enum", "label": "TTFX effect", "options": ["random", "beams", "bubbles", "fireworks", "matrix", "rain", "rings", "spotlights", "thunderstorm", "waves"], "defaultValue": "random" },
@@ -38,8 +38,8 @@
       { "key": "beatReactive", "type": "boolean", "label": "Beat-reactive effects", "defaultValue": false, "description": "Cycle TTFX animations on detected bass beats from local PipeWire audio. Keeps Spotify playing and requires cava." },
       { "key": "beatSensitivity", "type": "enum", "label": "Beat sensitivity", "options": ["low", "medium", "high"], "defaultValue": "high", "description": "Higher sensitivity changes effects on smaller bass transients." },
       { "key": "fontSize", "type": "integer", "label": "Terminal font size", "min": 6, "max": 72, "step": 1, "defaultValue": 28, "description": "Increase this if the screensaver text is too small." },
-      { "key": "useFiglet", "type": "boolean", "label": "Render text as FIGlet art", "defaultValue": false, "description": "Turns the screensaver text into large ASCII/Unicode block art before animating it. Requires figlet and a local .flf font file." },
-      { "key": "figletFontPath", "type": "string", "label": "FIGlet font file (.flf)", "defaultValue": "", "description": "Absolute path to a local FIGlet font, e.g. ~/.local/share/omarchyss/fonts/Delta Corps Priest 1.flf" }
+      { "key": "useFiglet", "type": "boolean", "label": "Render text as FIGlet art", "defaultValue": false, "description": "Turns the screensaver text into large ASCII/Unicode block art before animating it. Requires figlet and a selected FIGlet font." },
+      { "key": "figletFontPath", "type": "string", "label": "FIGlet font", "defaultValue": "standard", "description": "A FIGlet font name (standard, big, slant, block, shadow, script, ...) or an absolute path to a .flf file, e.g. ~/.local/share/omarchyss/fonts/MyFont.flf" }
     ]
   }
 }
