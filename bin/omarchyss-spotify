@@ -162,6 +162,15 @@ def http_json(url, data=None, headers=None, method=None):
         return e.code, payload
 
 
+def reject_legacy_client_id(client_id):
+    if client_id.lower() == LEGACY_SHARED_CLIENT_ID:
+        die("omarchyss-spotify: that Client ID is the old shared app bundled "
+            "with earlier releases, and its Spotify API quota is exhausted. "
+            "Create your own free app at "
+            "https://developer.spotify.com/dashboard (redirect URI "
+            "http://127.0.0.1:8945/callback) and enter its Client ID instead.")
+
+
 def require_client_id(config):
     client_id = config.get("client_id", "")
     if not re.fullmatch(r"[0-9a-fA-F]{32}", client_id):
@@ -179,6 +188,7 @@ def pkce_pair():
 def cmd_setup(args):
     if len(args) != 1 or not re.fullmatch(r"[0-9a-fA-F]{32}", args[0]):
         die("Usage: omarchyss-spotify setup <32-character-client-id>", 2)
+    reject_legacy_client_id(args[0])
     config = load_config()
     config["client_id"] = args[0]
     save_config(config)

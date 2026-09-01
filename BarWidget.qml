@@ -300,6 +300,12 @@ BarWidget {
       searchError = "Spotify Client ID must be 32 hexadecimal characters."
       return
     }
+    if (clientId.toLowerCase() === "0388ab0cbad445a4a67499815dc37891") {
+      searchError = "That Client ID is the old shared app and its quota is " +
+        "exhausted. Create your own free app at " +
+        "developer.spotify.com/dashboard and enter its Client ID instead."
+      return
+    }
     searchError = ""
     connectingSpotify = true
     spotifySetupProcess.command = ["python3", root.spotifyHelperPath, "setup", clientId]
