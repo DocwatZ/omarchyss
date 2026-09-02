@@ -737,6 +737,7 @@ BarWidget {
         anchors.centerIn: parent
         anchors.verticalCenterOffset: Math.round(button.fontSize * 0.04)
         text: "SS"
+        textFormat: Text.PlainText
         color: button.foreground
         font.family: button.bar ? button.bar.fontFamily : Style.font.family
         font.pixelSize: Math.max(5, Math.round(button.fontSize * 0.46))
