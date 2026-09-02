@@ -242,9 +242,10 @@ determine_text() {
       local cloud
       cloud=$(spotify_cloud_json || true)
       if [[ -n $cloud ]] && jq -e '.active == true' >/dev/null 2>&1 <<< "$cloud"; then
-        jq -r '[.title, .artists] | map(select(length > 0)) | join(" - ")' <<< "$cloud"
+        jq -r '.title, .artists' <<< "$cloud"
       elif spotify_available; then
-        spotifyctl metadata --format '{{title}} - {{artist}}'
+        spotifyctl metadata --format '{{title}}
+{{artist}}'
       else
         printf 'OMARCHYSS'
       fi

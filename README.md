@@ -20,8 +20,8 @@ the bar.
 
 - Left-click to start or stop a dedicated Alacritty or Foot screensaver window.
 - TTFX effect selection, including a random mode.
-- Render Omarchy branding, custom text, or the current Spotify track and
-  artist as `Track - Artist`.
+- Render Omarchy branding, custom text, or the current Spotify track title
+  above the artist.
 - Right-click opens a Spotify popup, middle-click next, and scroll for
   previous/next.
 - The popup shows album art, track/artist, a live progress bar with seek,
