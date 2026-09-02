@@ -9,6 +9,7 @@ readonly STATE_ROOT="${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}}
 readonly STATE_DIR="${STATE_ROOT}/omarchyss-${UID}"
 readonly STATE_FILE="$STATE_DIR/spotify-was-playing"
 readonly BRANDING_FILE="${HOME}/.config/omarchy/branding/screensaver.txt"
+readonly BRANDING_DEFAULT_FILE="${PLUGIN_DIR}/assets/screensaver.txt"
 readonly SPOTIFY_HELPER="$(dirname "$(readlink -f "$0")")/omarchyss-spotify"
 
 umask 077
@@ -225,7 +226,15 @@ determine_text() {
         printf 'OMARCHYSS'
       fi
       ;;
-    branding) [[ -f $BRANDING_FILE ]] && cat "$BRANDING_FILE" || printf 'OMARCHYSS' ;;
+    branding)
+      if [[ -s $BRANDING_FILE ]]; then
+        cat "$BRANDING_FILE"
+      elif [[ -s $BRANDING_DEFAULT_FILE ]]; then
+        cat "$BRANDING_DEFAULT_FILE"
+      else
+        printf 'OMARCHYSS'
+      fi
+      ;;
     custom) printf '%s' "$custom_text" ;;
   esac
 }

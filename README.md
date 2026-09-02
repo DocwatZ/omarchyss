@@ -82,6 +82,10 @@ font** to a name such as `standard`, `big`, `slant`, `block`, `shadow`, or
 file remains supported; a missing local font automatically falls back to
 `standard`.
 
+Branding mode does not require any extra font package: OmarchySS ships a
+bundled default `screensaver.txt` wordmark and uses that when
+`~/.config/omarchy/branding/screensaver.txt` is not present.
+
 The bar popup also provides quick **Beat-reactive effects**, **Beat
 sensitivity**, and **Custom text** controls. High sensitivity follows smaller
 audio transients; Medium and Low reduce effect changes. Custom text replaces
