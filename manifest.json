@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.docwatz.omarchyss",
   "name": "OmarchySS",
-  "version": "0.3.19",
+  "version": "0.3.20",
   "author": "DocwatZ",
   "license": "MIT",
   "homepage": "https://github.com/DocwatZ/omarchyss",
@@ -31,13 +31,13 @@
     },
     "schema": [
       { "key": "effect", "type": "enum", "label": "TTFX effect", "options": ["random", "beams", "bubbles", "fireworks", "matrix", "rain", "rings", "spotlights", "thunderstorm", "waves"], "defaultValue": "random" },
-      { "key": "textMode", "type": "enum", "label": "Screensaver text", "options": ["track", "branding", "custom"], "defaultValue": "track", "description": "Track shows the current Spotify artist and title." },
+      { "key": "textMode", "type": "enum", "label": "Screensaver text", "options": ["track", "branding", "custom"], "defaultValue": "track", "description": "Track shows the current Spotify title and artist." },
       { "key": "customText", "type": "string", "label": "Custom text", "defaultValue": "", "description": "Used when Screensaver text is Custom." },
       { "key": "pauseSpotify", "type": "boolean", "label": "Pause Spotify while active", "defaultValue": true },
       { "key": "autoCloseSeconds", "type": "integer", "label": "Auto-close after seconds", "min": 0, "max": 14400, "step": 60, "defaultValue": 0, "description": "Set to 0 to keep the screensaver open until stopped." },
       { "key": "beatReactive", "type": "boolean", "label": "Beat-reactive effects", "defaultValue": false, "description": "Cycle TTFX animations on detected bass beats from local PipeWire audio. Keeps Spotify playing and requires cava." },
       { "key": "beatSensitivity", "type": "enum", "label": "Beat sensitivity", "options": ["low", "medium", "high"], "defaultValue": "high", "description": "Higher sensitivity changes effects on smaller bass transients." },
-      { "key": "fontSize", "type": "integer", "label": "Terminal font size", "min": 6, "max": 72, "step": 1, "defaultValue": 28, "description": "Increase this if the screensaver text is too small." },
+      { "key": "fontSize", "type": "integer", "label": "Maximum terminal font size", "min": 6, "max": 72, "step": 1, "defaultValue": 28, "description": "OmarchySS scales down from this size when the text would not fit." },
       { "key": "useFiglet", "type": "boolean", "label": "Render text as FIGlet art", "defaultValue": false, "description": "Turns the screensaver text into large ASCII/Unicode block art before animating it. Requires figlet and a selected FIGlet font." },
       { "key": "figletFontPath", "type": "string", "label": "FIGlet font", "defaultValue": "standard", "description": "A FIGlet font name (standard, big, slant, block, shadow, script, ...) or an absolute path to a .flf file, e.g. ~/.local/share/omarchyss/fonts/MyFont.flf" }
     ]

@@ -20,8 +20,8 @@ the bar.
 
 - Left-click to start or stop a dedicated Alacritty or Foot screensaver window.
 - TTFX effect selection, including a random mode.
-- Render Omarchy branding, custom text, or the current Spotify artist and
-  track title.
+- Render Omarchy branding, custom text, or the current Spotify track and
+  artist as `Track - Artist`.
 - Right-click opens a Spotify popup, middle-click next, and scroll for
   previous/next.
 - The popup shows album art, track/artist, a live progress bar with seek,
@@ -39,7 +39,9 @@ the bar.
 - Optional auto-close timer.
 - Bundled Omarchy Font (a terminal-ready Delta Corps Priest 1 conversion) for
   consistent screensaver text on every installation.
-- Adjustable screensaver font size (default: 28pt).
+- Responsive text sizing: track/artist, branding and custom text are centred
+  again after terminal zoom, and refitted when the window is resized.
+- Adjustable maximum screensaver font size (default: 28pt).
 - Beat-reactive animation cycling: Cava analyzes local PipeWire audio and
   each detected bass beat advances to another TTFX effect.
 - A registered Omarchy global action for binding a keyboard shortcut.
@@ -98,6 +100,14 @@ bundled default `screensaver.txt` wordmark and uses that when
 The bundled `assets/fonts/Omarchy Font.ttf` is Mark Cuda's MIT-licensed vector
 conversion of Delta Corps Priest 1. Its upstream licence is included at
 `assets/fonts/LICENSE`.
+
+The configured font size is the upper limit for automatic fitting. Resizing
+an Alacritty screensaver window recalculates the largest size that fits its
+current pixel dimensions. Alacritty's Ctrl+Plus and Ctrl+Minus zoom remains
+manual: OmarchySS detects the changed terminal grid and redraws TTFX in the
+centre without immediately overriding that zoom level. Foot has no runtime
+font-size IPC, but OmarchySS still detects its changed grid and redraws the
+effect in the centre.
 
 The bar popup also provides quick **Beat-reactive effects**, **Beat
 sensitivity**, and **Custom text** controls. High sensitivity follows smaller
