@@ -37,7 +37,9 @@ the bar.
   phones, TVs, speakers, and other available devices.
 - Optionally pause Spotify for the screensaver session and resume it on exit.
 - Optional auto-close timer.
-- Adjustable terminal font size (default: 28pt).
+- Bundled Omarchy Font (a terminal-ready Delta Corps Priest 1 conversion) for
+  consistent screensaver text on every installation.
+- Adjustable screensaver font size (default: 28pt).
 - Beat-reactive animation cycling: Cava analyzes local PipeWire audio and
   each detected bass beat advances to another TTFX effect.
 - A registered Omarchy global action for binding a keyboard shortcut.
@@ -76,6 +78,13 @@ Then configure OmarchySS through the bar widget settings and run `omarchyss`
 to toggle it from a terminal. `omarchyss restart` picks up the current widget
 settings, while `omarchyss --help` lists explicit commands and options.
 
+The install command also copies the bundled **Omarchy Font** to
+`~/.local/share/fonts/omarchyss/` and refreshes the font cache. Starting the
+screensaver performs the same check, so launching it from the bar also
+self-installs the font on a fresh plugin installation. OmarchySS explicitly
+selects that font for its own Alacritty or Foot window; it does not change the
+font used by your normal terminals.
+
 FIGlet mode works with any font bundled by the `figlet` package. Set **FIGlet
 font** to a name such as `standard`, `big`, `slant`, `block`, `shadow`, or
 `script`; `standard` is the default. A path to a personally installed `.flf`
@@ -85,6 +94,10 @@ file remains supported; a missing local font automatically falls back to
 Branding mode does not require any extra font package: OmarchySS ships a
 bundled default `screensaver.txt` wordmark and uses that when
 `~/.config/omarchy/branding/screensaver.txt` is not present.
+
+The bundled `assets/fonts/Omarchy Font.ttf` is Mark Cuda's MIT-licensed vector
+conversion of Delta Corps Priest 1. Its upstream licence is included at
+`assets/fonts/LICENSE`.
 
 The bar popup also provides quick **Beat-reactive effects**, **Beat
 sensitivity**, and **Custom text** controls. High sensitivity follows smaller

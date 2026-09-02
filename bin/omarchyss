@@ -10,6 +10,10 @@ readonly STATE_DIR="${STATE_ROOT}/omarchyss-${UID}"
 readonly STATE_FILE="$STATE_DIR/spotify-was-playing"
 readonly BRANDING_FILE="${HOME}/.config/omarchy/branding/screensaver.txt"
 readonly BRANDING_DEFAULT_FILE="${PLUGIN_DIR}/assets/screensaver.txt"
+readonly FONT_FAMILY="Omarchy Font"
+readonly FONT_SOURCE="${PLUGIN_DIR}/assets/fonts/Omarchy Font.ttf"
+readonly FONT_INSTALL_DIR="${HOME}/.local/share/fonts/omarchyss"
+readonly FONT_INSTALL_FILE="${FONT_INSTALL_DIR}/Omarchy Font.ttf"
 readonly SPOTIFY_HELPER="$(dirname "$(readlink -f "$0")")/omarchyss-spotify"
 
 umask 077
@@ -21,6 +25,23 @@ mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+ensure_font_installed() {
+  [[ -f $FONT_SOURCE ]] || {
+    printf '%s\n' "OmarchySS: bundled font is missing: $FONT_SOURCE" >&2
+    return 1
+  }
+  if [[ -f $FONT_INSTALL_FILE ]] && cmp -s "$FONT_SOURCE" "$FONT_INSTALL_FILE"; then
+    return
+  fi
+  have fc-cache || {
+    printf '%s\n' "OmarchySS requires fc-cache to install its bundled font." >&2
+    return 1
+  }
+  mkdir -p "$FONT_INSTALL_DIR"
+  install -m 0644 "$FONT_SOURCE" "$FONT_INSTALL_FILE"
+  fc-cache -f "$FONT_INSTALL_DIR" >/dev/null
+}
 
 # Reads a bar widget setting, preferring the value configured on the bar
 # (~/.config/omarchy/shell.json), then the plugin manifest's default, then the
@@ -63,9 +84,11 @@ start_from_settings() {
 install_command() {
   local target=${1:-$HOME/.local/bin} self
   self=$(readlink -f "$0")
+  ensure_font_installed
   mkdir -p "$target"
   ln -sfn "$self" "$target/omarchyss"
   printf '%s\n' "Installed $target/omarchyss -> $self"
+  printf '%s\n' "Installed $FONT_INSTALL_FILE"
   case ":${PATH}:" in
     *":${target}:"*) ;;
     *) printf '%s\n' "Note: $target is not on your PATH; add it to your shell profile." >&2 ;;
@@ -527,6 +550,7 @@ start() {
   if [[ $pause_spotify == true && $beat_reactive != true ]] && spotify_available && [[ $(spotify_status) == Playing ]]; then
     : > "$STATE_FILE"; spotify_action pause
   fi
+  ensure_font_installed
   local self
   self=$(readlink -f "$0")
   # `font_size` here is just the initial/preferred value: run()'s render
@@ -536,13 +560,15 @@ start() {
   # window (see the plugin README) but no longer needs to fix its size,
   # since the text now adapts to the window instead of the other way round.
   if have alacritty; then
-    alacritty --class "$APP_CLASS,$APP_CLASS" --title "OmarchySS" --option "font.size=$font_size" \
+    alacritty --class "$APP_CLASS,$APP_CLASS" --title "OmarchySS" \
+      --option "font.normal.family='$FONT_FAMILY'" \
+      --option "font.bold.family='$FONT_FAMILY'" \
+      --option "font.italic.family='$FONT_FAMILY'" \
+      --option "font.bold_italic.family='$FONT_FAMILY'" \
+      --option "font.size=$font_size" \
       -e bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" "$font_size" "$beat_sensitivity" &
   elif have foot; then
-    # foot has no standalone font-size key; override the whole font list with a
-    # generic monospace fallback at the requested size. This may not match the
-    # user's usual terminal font family when Alacritty is unavailable.
-    foot --app-id="$APP_CLASS" --title="OmarchySS" --override="font=monospace:size=$font_size" \
+    foot --app-id="$APP_CLASS" --title="OmarchySS" --override="font=$FONT_FAMILY:size=$font_size" \
       bash "$self" run "$effect" "$text_mode" "$custom_text" "$timeout" "$beat_reactive" "$use_figlet" "$figlet_font" "$font_size" "$beat_sensitivity" &
   else
     printf '%s\n' "OmarchySS requires Alacritty or Foot." >&2
