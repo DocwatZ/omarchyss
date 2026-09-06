@@ -6,7 +6,7 @@
   "author": "DocwatZ",
   "license": "MIT",
   "homepage": "https://github.com/DocwatZ/omarchyss",
-  "description": "A Spotify player and terminal screensaver with configurable TTFX effects.",
+  "description": "OmarchySS is an Omarchy bar plugin that launches a dedicated terminal screensaver with TTFX animations, Spotify track metadata and controls, configurable branding or custom text, and optional beat-reactive effects. More information: https://github.com/DocwatZ/omarchyss",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "BarWidget.qml"
