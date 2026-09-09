@@ -842,16 +842,21 @@ def cmd_search(args):
 
 def cmd_devices(_args):
     config = load_config()
-    if player_cooldown_remaining() > 0 and local_player_available():
-        # Surface the local device so playback stays selectable while the Web
-        # API player endpoints are blocked.
-        print(json.dumps([{
-            "id": "",
-            "name": f"{DEVICE_NAME} (local)",
-            "type": "Computer",
-            "is_active": busctl_get(spotifyd_bus_name(), "PlaybackStatus") is not None,
-        }]))
-        return
+    if player_cooldown_remaining() > 0:
+        # Keep the local fallback usable after a shell restart. The Web API
+        # cooldown can outlive spotifyd, so do not wait for a manual recovery.
+        if not local_player_available() and spotifyd_authenticated():
+            start_spotifyd()
+        if local_player_available():
+            # Surface the local device so playback stays selectable while the
+            # Web API player endpoints are blocked.
+            print(json.dumps([{
+                "id": "",
+                "name": f"{DEVICE_NAME} (local)",
+                "type": "Computer",
+                "is_active": busctl_get(spotifyd_bus_name(), "PlaybackStatus") is not None,
+            }]))
+            return
     status, payload = api_request(config, "/me/player/devices")
     if status != 200:
         die(f"omarchyss-spotify: devices failed ({status}): {payload.get('error', payload)}{retry_suffix(payload)}")
