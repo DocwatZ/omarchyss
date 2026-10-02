@@ -39,6 +39,8 @@ the bar.
 - Optional auto-close timer.
 - Bundled Omarchy Font (a terminal-ready Delta Corps Priest 1 conversion) for
   consistent screensaver text on every installation.
+- The bundled font uses fixed-width terminal metrics so FIGlet character
+  columns stay aligned across different track and artist names.
 - Responsive text sizing: track/artist, branding and custom text are centred
   again after terminal zoom, and refitted when the window is resized.
 - Adjustable maximum screensaver font size (default: 28pt).
